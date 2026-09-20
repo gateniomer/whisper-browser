@@ -31,3 +31,29 @@ export function CloseIcon({ size = 20 } = {}) {
     </svg>
   );
 }
+
+export function MicIcon({ size = 28 } = {}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+    </svg>
+  );
+}
+
+export function StopIcon({ size = 26 } = {}) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor">
+      <rect x="6.5" y="6.5" width="11" height="11" rx="2.5" />
+    </svg>
+  );
+}

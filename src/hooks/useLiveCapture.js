@@ -9,9 +9,9 @@ import { LIVE_TUNING } from "../lib/constants.js";
  * adaptive noise floor, hysteresis, pre-roll and trailing-silence trimming),
  * and calls `onSegment({ id, offset, audio, speechSec })` per utterance.
  */
-export function useLiveCapture({ onSegment, onError } = {}) {
-  const cbRef = useRef({ onSegment, onError });
-  cbRef.current = { onSegment, onError };
+export function useLiveCapture({ onSegment, onError, onLevel } = {}) {
+  const cbRef = useRef({ onSegment, onError, onLevel });
+  cbRef.current = { onSegment, onError, onLevel };
 
   const liveRef = useRef(null);
   const activeRef = useRef(false);
@@ -24,6 +24,7 @@ export function useLiveCapture({ onSegment, onError } = {}) {
   const idRef = useRef(0);
   const noiseFloorRef = useRef(0.005);
   const vadRef = useRef(false);
+  const lastLevelAtRef = useRef(0);
 
   const [liveActive, setLiveActive] = useState(false);
 
@@ -76,6 +77,13 @@ export function useLiveCapture({ onSegment, onError } = {}) {
     let sum = 0;
     for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
     const rms = Math.sqrt(sum / samples.length);
+
+    // Report a throttled input level for the UI meter (~15 Hz).
+    const now = performance.now();
+    if (now - lastLevelAtRef.current > 66) {
+      lastLevelAtRef.current = now;
+      cbRef.current.onLevel?.(rms);
+    }
 
     // Adaptive noise floor: track the ambient level while not in speech, then
     // require speech to rise clearly above it. Hysteresis stops rapid toggling.
@@ -198,6 +206,7 @@ export function useLiveCapture({ onSegment, onError } = {}) {
     const live = liveRef.current;
     if (live && speechRef.current.length) flushSegment(live.ctx.sampleRate);
     teardown();
+    cbRef.current.onLevel?.(0);
   }
 
   // Tear down on unmount.

@@ -1,15 +1,3 @@
-export const DEFAULT_MODEL = "onnx-community/whisper-base";
-
-export const MODELS = [
-  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny — 39M" },
-  { id: "onnx-community/whisper-base", label: "Whisper Base — 74M" },
-  { id: "onnx-community/whisper-small", label: "Whisper Small — 244M" },
-  {
-    id: "onnx-community/whisper-large-v3-turbo",
-    label: "Whisper Large v3 Turbo — 809M",
-  },
-];
-
 export const LANGUAGES = [
   { id: "en", label: "English" },
   { id: "auto", label: "Auto-detect" },

@@ -1,31 +1,48 @@
+import { MicIcon, StopIcon } from "./Icons.jsx";
+import { fmt } from "../lib/format.js";
+
+const BAR_SHAPE = [0.45, 0.75, 1, 0.75, 0.45];
+
 export default function Dock({
-  recording,
   liveActive,
+  starting,
   elapsed,
-  disabledRecord,
-  disabledLive,
-  onRecord,
-  onLive,
+  level,
+  disabled,
+  onToggle,
 }) {
+  // Map RMS (~0–0.3) to a 0–1 visual level.
+  const visual = Math.min(1, level * 7);
+
   return (
     <footer className="dock">
-      <button
-        className={recording ? "btn stop" : "btn"}
-        onClick={onRecord}
-        disabled={disabledRecord}
-      >
-        <span className="btnIcon">{recording ? "■" : "●"}</span>
-        {recording ? `Stop · ${elapsed}s` : "Record"}
-      </button>
+      <div className={"meter" + (liveActive ? " on" : "")} aria-hidden="true">
+        {BAR_SHAPE.map((shape, i) => (
+          <span
+            key={i}
+            style={{
+              height: `${Math.round((0.16 + visual * shape * 0.84) * 100)}%`,
+            }}
+          />
+        ))}
+      </div>
 
       <button
-        className={liveActive ? "btn stop" : "btn primary"}
-        onClick={onLive}
-        disabled={disabledLive}
+        className={"micbtn" + (liveActive ? " live" : "")}
+        onClick={onToggle}
+        disabled={disabled}
+        aria-label={liveActive ? "Stop live transcription" : "Start live transcription"}
       >
-        <span className="btnIcon">{liveActive ? "■" : "◉"}</span>
-        {liveActive ? "Stop live" : "Go live"}
+        {liveActive ? <StopIcon /> : <MicIcon />}
       </button>
+
+      <div className="dockLabel">
+        {liveActive
+          ? `Listening · ${fmt(elapsed)}`
+          : starting
+            ? "Starting…"
+            : "Tap to start live captions"}
+      </div>
     </footer>
   );
 }

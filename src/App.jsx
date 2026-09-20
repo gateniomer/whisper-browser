@@ -3,9 +3,8 @@
  *
  * This file only wires things together. The heavier logic lives in:
  *   - hooks/useEngine       engine selection + messaging + model/cache state
- *   - hooks/useRecorder     one-shot recording
  *   - hooks/useLiveCapture  live capture + VAD segmentation
- *   - lib/*                 framework-free helpers (models, webgpu, audio, …)
+ *   - lib/*                 framework-free helpers (models, webgpu, format, …)
  *   - components/*          presentational UI
  */
 import { useEffect, useRef, useState } from "react";
@@ -13,11 +12,16 @@ import TopBar from "./components/TopBar.jsx";
 import Stage from "./components/Stage.jsx";
 import Dock from "./components/Dock.jsx";
 import SettingsSheet from "./components/SettingsSheet.jsx";
+import Splash from "./components/Splash.jsx";
 import { useEngine } from "./hooks/useEngine.js";
-import { useRecorder } from "./hooks/useRecorder.js";
 import { useLiveCapture } from "./hooks/useLiveCapture.js";
-import { DEFAULT_MODEL, MODELS } from "./lib/constants.js";
-import { isModelDownloaded } from "./lib/models.js";
+import {
+  DEFAULT_MODEL,
+  MODELS,
+  isEnglishOnly,
+  isModelDownloaded,
+  modelFamily,
+} from "./lib/models.js";
 import { progressPercent, statusLabel } from "./lib/format.js";
 
 export default function App() {
@@ -26,15 +30,17 @@ export default function App() {
   const [device, setDevice] = useState("webgpu");
   const [segments, setSegments] = useState([]);
   const [pending, setPending] = useState(0);
-  const [result, setResult] = useState(null);
+  const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
   const [modelReady, setModelReady] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [booted, setBooted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const deviceTouchedRef = useRef(false);
   const endRef = useRef(null);
 
   const engine = useEngine({
-    onResult: (data) => setResult(data),
     onSegment: ({ id, offset, data }) => {
       setPending((p) => Math.max(0, p - 1));
       const text = (data.text || "").trim();
@@ -55,6 +61,17 @@ export default function App() {
 
   const activeDownloaded = isModelDownloaded(model, device, engine.cacheUrls);
 
+  // English-only models ignore the language picker; Whisper-family English
+  // models are pinned to "en", Moonshine takes no language option at all.
+  const englishOnly = isEnglishOnly(model);
+  const transcribeLanguage = englishOnly
+    ? modelFamily(model) === "whisper"
+      ? "en"
+      : null
+    : language === "auto"
+      ? null
+      : language;
+
   // Preload the active model only when it is already downloaded.
   useEffect(() => {
     if (!engine.ready) return;
@@ -74,16 +91,20 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine.ready, model, device, engine.cacheUrls]);
 
-  const recorder = useRecorder({
-    onAudio: (audio) => {
-      engine.setStatus("transcribing");
-      engine.transcribe(
-        { audio, model, device, language: language === "auto" ? null : language },
-        [audio.buffer],
-      );
-    },
-    onError: engine.setError,
-  });
+  // Boot screen: shown until the engine is chosen (GPU probe done) and the
+  // initially-selected model — if already downloaded — is loaded. Runs once.
+  useEffect(() => {
+    if (booted || !engine.ready) return;
+    if (activeDownloaded && !modelReady) return;
+    setBooted(true);
+  }, [booted, engine.ready, activeDownloaded, modelReady]);
+
+  // Safety net: never leave the user on the splash if the engine never reports.
+  useEffect(() => {
+    if (booted) return;
+    const t = setTimeout(() => setBooted(true), 10000);
+    return () => clearTimeout(t);
+  }, [booted]);
 
   const live = useLiveCapture({
     onSegment: ({ id, offset, audio, speechSec }) => {
@@ -93,7 +114,7 @@ export default function App() {
           audio,
           model,
           device,
-          language: language === "auto" ? null : language,
+          language: transcribeLanguage,
           live: true,
           id,
           offset,
@@ -103,35 +124,53 @@ export default function App() {
       );
     },
     onError: engine.setError,
+    onLevel: setLevel,
   });
 
-  // Keep the newest live line in view.
+  // Running clock while live.
+  useEffect(() => {
+    if (!live.liveActive) {
+      setElapsed(0);
+      return;
+    }
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [live.liveActive]);
+
+  // Keep the newest line in view.
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [segments, live.liveActive]);
 
-  const busy = engine.status === "loading" || engine.status === "transcribing";
+  const busy =
+    engine.status === "loading" ||
+    engine.status === "transcribing" ||
+    pending > 0;
   const pct = progressPercent(engine.progress);
-  const locked = busy || recorder.recording || live.liveActive;
+  const locked = busy || live.liveActive || starting;
+  const showEmpty = !live.liveActive && !starting && segments.length === 0;
 
   const statusText = engine.downloading
     ? `Downloading… ${pct ?? 0}%`
-    : live.liveActive
-      ? pending > 0
-        ? `Listening · ${pending} queued`
-        : "Listening…"
-      : !activeDownloaded
-        ? "Model not downloaded"
-        : !modelReady
-          ? "Loading model…"
-          : statusLabel(engine.status);
+    : starting
+      ? "Starting…"
+      : live.liveActive
+        ? pending > 0
+          ? `Listening · ${pending} queued`
+          : "Listening…"
+        : !activeDownloaded
+          ? "Model not downloaded"
+          : !modelReady
+            ? "Loading model…"
+            : statusLabel(engine.status);
 
-  const showLive = live.liveActive || segments.length > 0;
-  const showFinal = !showLive && result;
-  const showEmpty = !showLive && !showFinal;
-
-  async function startLive() {
+  async function toggleLive() {
+    if (live.liveActive) {
+      await live.stop();
+      return;
+    }
     engine.setError(null);
+    setStarting(true);
     setSegments([]);
     setPending(0);
     try {
@@ -139,13 +178,9 @@ export default function App() {
       await live.start();
     } catch (err) {
       engine.setError(String(err?.message || err));
+    } finally {
+      setStarting(false);
     }
-  }
-
-  function startRecording() {
-    engine.setError(null);
-    setResult(null);
-    recorder.start();
   }
 
   function handleDeviceChange(value) {
@@ -153,11 +188,24 @@ export default function App() {
     setDevice(value);
   }
 
+  if (!booted) {
+    return (
+      <Splash
+        label={
+          engine.ready
+            ? "Loading model…"
+            : "Setting up on-device transcription…"
+        }
+      />
+    );
+  }
+
   return (
     <div className="app">
       <TopBar
-        mode={live.liveActive ? "live" : recorder.recording ? "rec" : "idle"}
+        mode={live.liveActive ? "live" : "idle"}
         statusText={statusText}
+        notice={engine.notice}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
@@ -169,27 +217,21 @@ export default function App() {
 
       <Stage
         error={engine.error}
-        notice={engine.notice}
         showEmpty={showEmpty}
         activeDownloaded={activeDownloaded}
         onChooseModel={() => setSettingsOpen(true)}
-        showLive={showLive}
+        liveActive={live.liveActive}
         segments={segments}
         endRef={endRef}
-        showFinal={showFinal}
-        result={result}
       />
 
       <Dock
-        recording={recorder.recording}
         liveActive={live.liveActive}
-        elapsed={recorder.elapsed}
-        disabledRecord={busy || live.liveActive || !modelReady}
-        disabledLive={
-          !live.liveActive && (busy || recorder.recording || !modelReady)
-        }
-        onRecord={recorder.recording ? recorder.stop : startRecording}
-        onLive={live.liveActive ? live.stop : startLive}
+        starting={starting}
+        elapsed={elapsed}
+        level={level}
+        disabled={!live.liveActive && (busy || !modelReady || starting)}
+        onToggle={toggleLive}
       />
 
       <SettingsSheet
@@ -197,9 +239,11 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         language={language}
         onLanguageChange={setLanguage}
+        englishOnly={englishOnly}
         device={device}
         onDeviceChange={handleDeviceChange}
         gpuStatus={engine.gpuStatus}
+        notice={engine.notice}
         locked={locked}
         manager={{
           models: MODELS,

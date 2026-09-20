@@ -7,9 +7,11 @@ export default function SettingsSheet({
   onClose,
   language,
   onLanguageChange,
+  englishOnly,
   device,
   onDeviceChange,
   gpuStatus,
+  notice,
   locked,
   manager,
 }) {
@@ -29,11 +31,11 @@ export default function SettingsSheet({
         </div>
 
         <div className="field">
-          <label>Language</label>
+          <label>Language{englishOnly ? " (model is English-only)" : ""}</label>
           <select
             value={language}
             onChange={(e) => onLanguageChange(e.target.value)}
-            disabled={locked}
+            disabled={locked || englishOnly}
           >
             {LANGUAGES.map((l) => (
               <option key={l.id} value={l.id}>
@@ -55,6 +57,7 @@ export default function SettingsSheet({
             </option>
             <option value="wasm">WASM (CPU)</option>
           </select>
+          {notice && <p className="hint">{notice}</p>}
         </div>
 
         <ModelManager {...manager} />

@@ -1,5 +1,5 @@
 import { pipeline, env } from "@huggingface/transformers";
-import { dtypesFor, requiredFiles } from "./models.js";
+import { dtypesFor, modelFamily, requiredFiles } from "./models.js";
 
 // Never look for models beside the app; always pull from the HF Hub.
 env.allowLocalModels = false;
@@ -97,7 +97,7 @@ function webgpuInThisContext() {
 async function webgpuUsableHere() {
   if (!webgpuInThisContext()) return false;
   try {
-    const adapter = await navigator.gpu.requestAdapter();
+    const adapter = await withTimeout(navigator.gpu.requestAdapter(), 1500);
     return !!adapter;
   } catch {
     return false;
@@ -109,6 +109,15 @@ function isSecureContextHere() {
     return self.isSecureContext;
   }
   return true;
+}
+
+// requestAdapter() can hang in some environments (headless, VMs, odd drivers).
+// Never let that block the engine from reporting its capabilities.
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
 }
 
 export function createEngine(post) {
@@ -208,9 +217,10 @@ export function createEngine(post) {
     if (sharedAdapter) return sharedAdapter;
     try {
       if (typeof navigator === "undefined" || !("gpu" in navigator)) return null;
-      const adapter = await navigator.gpu.requestAdapter({
-        powerPreference: "high-performance",
-      });
+      const adapter = await withTimeout(
+        navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
+        2500,
+      );
       if (!adapter) return null;
       try {
         env.backends.onnx.webgpu.adapter = adapter;
@@ -288,17 +298,22 @@ export function createEngine(post) {
 
     post({ type: "status", data: "transcribing" });
 
-    // Live segments are timestamped by the app (segment offset), so we don't ask
-    // Whisper for timestamps there — timestamp decoding costs accuracy, and it
-    // hurts most on the short clips live mode produces. One-shot transcription
-    // keeps timestamps because the UI shows them.
-    const output = await pipe(msg.audio, {
-      chunk_length_s: 30,
-      stride_length_s: 5,
-      return_timestamps: !msg.live,
-      task: "transcribe",
-      ...(msg.language ? { language: msg.language } : {}),
-    });
+    // Decode options differ by model family. Whisper (and distil-whisper) take
+    // chunking/language/timestamps; live segments skip timestamps because the
+    // app timestamps them by segment offset and timestamp decoding costs
+    // accuracy on short clips. Moonshine takes plain audio.
+    let options = {};
+    if (modelFamily(msg.model) === "whisper") {
+      options = {
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: !msg.live,
+        task: "transcribe",
+        ...(msg.language ? { language: msg.language } : {}),
+      };
+    }
+
+    const output = await pipe(msg.audio, options);
 
     if (msg.live && isNoiseOutput(output.text, msg.speechSec)) {
       output.text = "";
@@ -310,6 +325,10 @@ export function createEngine(post) {
     } else {
       post({ type: "result", data: output });
     }
+
+    // This unit of work is done. Live mode may still have segments queued; the
+    // app keeps its controls disabled while any are pending.
+    post({ type: "status", data: "idle" });
   }
 
   async function handle(msg) {
