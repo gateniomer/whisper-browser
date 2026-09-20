@@ -33,9 +33,13 @@ env.useBrowserCache = false;
 env.customCache = modelCache;
 
 async function listCache() {
-  const cache = await cacheStore();
-  const keys = await cache.keys();
-  return keys.map((r) => r.url);
+  try {
+    const cache = await cacheStore();
+    const keys = await cache.keys();
+    return keys.map((r) => r.url);
+  } catch {
+    return [];
+  }
 }
 
 async function deleteModel(modelId) {
@@ -99,7 +103,9 @@ async function getTranscriber({ model, device }) {
     if (device === "webgpu") {
       self.postMessage({
         type: "notice",
-        data: "WebGPU unavailable on this device — falling back to CPU (WASM).",
+        data: self.isSecureContext
+          ? "WebGPU failed to initialize — falling back to CPU (WASM)."
+          : "WebGPU requires an HTTPS (secure) origin — falling back to CPU (WASM).",
       });
       transcriber = await createPipeline({ model, device: "wasm" });
       loadedKey = `${model}|wasm`;
@@ -195,7 +201,7 @@ self.onmessage = async (event) => {
 
   // List everything currently stored.
   if (msg.type === "list") {
-    self.postMessage({ type: "cache-list", urls: await listCache() });
+    self.postMessage({ type: "cache-list", data: await listCache() });
     return;
   }
 
@@ -219,7 +225,7 @@ self.onmessage = async (event) => {
         });
       } finally {
         self.postMessage({ type: "status", data: "idle" });
-        self.postMessage({ type: "cache-list", urls: await listCache() });
+        self.postMessage({ type: "cache-list", data: await listCache() });
       }
     });
     return;
@@ -229,7 +235,7 @@ self.onmessage = async (event) => {
   if (msg.type === "delete") {
     enqueue(async () => {
       await deleteModel(msg.model);
-      self.postMessage({ type: "cache-list", urls: await listCache() });
+      self.postMessage({ type: "cache-list", data: await listCache() });
     });
     return;
   }

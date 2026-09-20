@@ -69,36 +69,44 @@ export default function App() {
   const [liveActive, setLiveActive] = useState(false);
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
-  const [gpuOk, setGpuOk] = useState(true);
-  const [gpuChecked, setGpuChecked] = useState(false);
+  // "checking" | "ready" | "no-adapter" | "unsupported" | "insecure"
+  const [gpuStatus, setGpuStatus] = useState("checking");
   const [modelReady, setModelReady] = useState(false);
   const [cacheUrls, setCacheUrls] = useState([]);
   const [downloading, setDownloading] = useState(null);
 
-  // Pick a sensible default device and warn if WebGPU isn't usable here.
+  const deviceTouchedRef = useRef(false);
+
+  function applyGpuStatus(status) {
+    setGpuStatus(status);
+    if (deviceTouchedRef.current) return; // respect a manual device choice
+    if (status === "ready") {
+      setDevice("webgpu");
+      setNotice(null);
+    } else {
+      setDevice("wasm");
+      setNotice(gpuMessage(status));
+    }
+  }
+
+  // Probe WebGPU, retrying past the transient null that a single early call can
+  // hit, and re-check when the tab regains focus.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      let ok = false;
-      try {
-        const adapter = navigator.gpu && (await navigator.gpu.requestAdapter());
-        ok = !!adapter;
-      } catch {
-        ok = false;
-      }
-      if (cancelled) return;
-      setGpuOk(ok);
-      setGpuChecked(true);
-      if (!ok) {
-        setDevice("wasm");
-        setNotice(
-          "WebGPU isn't available on this device — using CPU (WASM). It works, just slower.",
-        );
-      }
-    })();
+    const run = () =>
+      probeWebGPU().then((status) => {
+        if (!cancelled) applyGpuStatus(status);
+      });
+    run();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -132,7 +140,7 @@ export default function App() {
         loadWaitersRef.current = [];
         waiters.forEach((w) => w.resolve());
       } else if (type === "cache-list") {
-        setCacheUrls(data);
+        setCacheUrls(Array.isArray(data) ? data : []);
       } else if (type === "downloaded") {
         setDownloading(null);
       } else if (type === "download-error") {
@@ -140,7 +148,7 @@ export default function App() {
         setError(data);
       } else if (type === "notice") {
         setNotice(data);
-        setGpuOk(false);
+        setGpuStatus("no-adapter");
         setDevice("wasm");
       } else if (type === "error") {
         setError(data);
@@ -162,7 +170,7 @@ export default function App() {
 
   // Preload the selected model only if it is already downloaded.
   useEffect(() => {
-    if (!gpuChecked || !workerRef.current) return;
+    if (gpuStatus === "checking" || !workerRef.current) return;
     if (!isModelDownloaded(model)) {
       setModelReady(false);
       return;
@@ -180,7 +188,7 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gpuChecked, model, device, cacheUrls]);
+  }, [gpuStatus, model, device, cacheUrls]);
 
   useEffect(() => {
     if (!recording) return;
@@ -212,8 +220,9 @@ export default function App() {
 
   function isModelDownloaded(id) {
     const needs = requiredFiles(device);
+    const urls = cacheUrls || [];
     return needs.every((n) =>
-      cacheUrls.some((u) => u.includes(`/${id}/`) && u.endsWith(n)),
+      urls.some((u) => u.includes(`/${id}/`) && u.endsWith(n)),
     );
   }
 
@@ -573,11 +582,14 @@ export default function App() {
           Device
           <select
             value={device}
-            onChange={(e) => setDevice(e.target.value)}
+            onChange={(e) => {
+              deviceTouchedRef.current = true;
+              setDevice(e.target.value);
+            }}
             disabled={locked}
           >
-            <option value="webgpu" disabled={!gpuOk}>
-              WebGPU (GPU){gpuOk ? "" : " — unavailable"}
+            <option value="webgpu">
+              WebGPU (GPU){gpuStatus === "ready" ? "" : " — may be unavailable"}
             </option>
             <option value="wasm">WASM (CPU)</option>
           </select>
@@ -688,6 +700,57 @@ function statusLabel(status) {
   if (status === "loading") return "Loading model…";
   if (status === "transcribing") return "Transcribing…";
   return "Ready";
+}
+
+function gpuMessage(status) {
+  switch (status) {
+    case "insecure":
+      return "WebGPU requires an HTTPS (secure) origin, and this page is on HTTP — using CPU (WASM). It works, just slower.";
+    case "unsupported":
+      return "This browser doesn't support WebGPU — using CPU (WASM). It works, just slower.";
+    case "no-adapter":
+      return "No WebGPU adapter is available on this device — using CPU (WASM). It works, just slower.";
+    default:
+      return null;
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), ms),
+    ),
+  ]);
+}
+
+// Returns one of: "ready" | "no-adapter" | "unsupported" | "insecure".
+// requestAdapter() can resolve null (or, in some Firefox builds, reject) if it
+// is called before the GPU stack is ready, so retry with backoff before giving
+// up. navigator.gpu is absent entirely in insecure contexts.
+async function probeWebGPU() {
+  if (typeof navigator === "undefined" || !("gpu" in navigator)) {
+    return typeof window !== "undefined" && !window.isSecureContext
+      ? "insecure"
+      : "unsupported";
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const adapter = await withTimeout(
+        navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
+        2000,
+      );
+      if (adapter) return "ready";
+    } catch {
+      // Some builds reject instead of resolving null; treat as "not yet".
+    }
+    await sleep(400 * 2 ** attempt);
+  }
+  return "no-adapter";
 }
 
 function fmt(seconds) {
