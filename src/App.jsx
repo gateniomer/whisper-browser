@@ -1,16 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import workletUrl from "./pcm-worklet.js?url";
 import { createEngine } from "./engine.js";
+import { requiredFiles, sizeLabel } from "./models.js";
 
 const MODELS = [
-  { id: "onnx-community/whisper-base", label: "Whisper Base", size: "~140 MB" },
-  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny", size: "~40 MB" },
-  { id: "onnx-community/whisper-small", label: "Whisper Small", size: "~500 MB" },
-  {
-    id: "onnx-community/whisper-large-v3-turbo",
-    label: "Whisper Large v3 Turbo",
-    size: "~1.5 GB",
-  },
+  { id: "onnx-community/whisper-base", label: "Whisper Base" },
+  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny" },
+  { id: "onnx-community/whisper-small", label: "Whisper Small" },
+  { id: "onnx-community/whisper-large-v3-turbo", label: "Whisper Large v3 Turbo" },
 ];
 
 const LANGUAGES = [
@@ -32,12 +29,8 @@ const PRE_ROLL_MS = 150; // keep this much audio before speech starts
 const MIN_SPEECH_SEC = 0.5; // ignore segments with less actual speech than this
 const MAX_SEGMENT_SEC = 12; // force a cut so segments stay short
 
-// The .onnx files transformers.js loads depend on the backend.
-function requiredFiles(device) {
-  return device === "webgpu"
-    ? ["encoder_model.onnx", "decoder_model_merged.onnx"]
-    : ["encoder_model_quantized.onnx", "decoder_model_merged_quantized.onnx"];
-}
+// The .onnx files transformers.js loads depend on the backend and model; see
+// src/models.js. requiredFiles(model, device) returns the expected names.
 
 export default function App() {
   const engineRef = useRef(null);
@@ -248,7 +241,7 @@ export default function App() {
   }, []);
 
   function isModelDownloaded(id) {
-    const needs = requiredFiles(device);
+    const needs = requiredFiles(id, device);
     const urls = cacheUrls || [];
     return needs.every((n) =>
       urls.some((u) => u.includes(`/${id}/`) && u.endsWith(n)),
@@ -549,7 +542,7 @@ export default function App() {
               <li key={m.id} className={isActive ? "model active" : "model"}>
                 <div className="modelInfo">
                   <span className="modelName">{m.label}</span>
-                  <span className="modelMeta">{m.size}</span>
+                  <span className="modelMeta">{sizeLabel(m.id, device)}</span>
                 </div>
                 <div className="modelActions">
                   <span className={downloaded ? "badge ok" : "badge"}>

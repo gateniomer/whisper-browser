@@ -1,4 +1,5 @@
 import { pipeline, env } from "@huggingface/transformers";
+import { dtypesFor } from "./models.js";
 
 // Never look for models beside the app; always pull from the HF Hub.
 env.allowLocalModels = false;
@@ -122,16 +123,10 @@ export function createEngine(post) {
     return run;
   }
 
-  function dtypeFor(device) {
-    // WebGPU has no quantized kernel support in all backends, so use fp32 there.
-    // WASM runs best with q8 weights.
-    return device === "webgpu" ? "fp32" : "q8";
-  }
-
   function createPipeline({ model, device }) {
     return pipeline("automatic-speech-recognition", model, {
       device,
-      dtype: dtypeFor(device),
+      dtype: dtypesFor(model, device),
       progress_callback: (p) => post({ type: "progress", data: p }),
     });
   }
