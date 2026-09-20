@@ -29,7 +29,7 @@ backend (WebGPU uses higher precision; CPU uses 8-bit).
 | Model | Params | Size | Notes |
 | --- | ---: | ---: | --- |
 | Whisper Tiny | 39M | ~41 MB | multilingual, fastest Whisper (GPU/CPU) |
-| Whisper Base | 74M | ~77 MB | multilingual, default (GPU/CPU) |
+| Whisper Base | 74M | ~77 MB | multilingual, balanced (GPU/CPU) |
 | Whisper Small | 244M | ~249 MB | multilingual, more accurate (GPU/CPU) |
 | Whisper Large v3 Turbo | 809M | ~1.1 GB | multilingual; runs on CPU |
 | Moonshine Tiny | 27M | ~28 MB | English, built for real-time (GPU/CPU) |
@@ -92,9 +92,10 @@ npm install
 npm run dev
 ```
 
-Open the printed `localhost` URL. On first run, open **Settings → Models** and
-download a model (Whisper Base is a good default; Moonshine Base is the most
-responsive for English).
+Open the printed `localhost` URL. No model is selected by default and the
+selection isn't remembered, so each session: open **Settings → Models**,
+download a model, then tap its **Use** button. **Whisper Base** is a balanced
+choice; **Moonshine Base** is the most responsive for English.
 
 Scripts:
 

@@ -12,6 +12,7 @@ export default function SettingsSheet({
   englishOnly,
   device,
   onDeviceChange,
+  onResetDevice,
   gpuStatus,
   notice,
   locked,
@@ -59,6 +60,14 @@ export default function SettingsSheet({
             </option>
             <option value="wasm">WASM (CPU)</option>
           </select>
+          <button
+            type="button"
+            className="linkBtn"
+            onClick={onResetDevice}
+            disabled={locked}
+          >
+            Use recommended (auto)
+          </button>
         </Field>
 
         <ModelManager {...manager} />

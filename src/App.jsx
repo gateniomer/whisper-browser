@@ -33,15 +33,11 @@ import { deriveViewState } from "./lib/viewState.js";
 const MAX_TRANSCRIBE_BOOT_MS = 10000;
 
 export default function App() {
-  const {
-    model,
-    setModel,
-    language,
-    setLanguage,
-    device,
-    setDevice,
-    deviceTouchedRef,
-  } = usePersistentSettings();
+  const { language, setLanguage, device, setDevice, deviceTouchedRef } =
+    usePersistentSettings();
+
+  // Not persisted: the user chooses a model each session.
+  const [model, setModel] = useState(null);
 
   const [segments, setSegments] = useState([]);
   const [partial, setPartial] = useState(null);
@@ -92,18 +88,20 @@ export default function App() {
   // English-only models ignore the language picker; Whisper-family English
   // models are pinned to "en", Moonshine takes no language option at all.
   const englishOnly = isEnglishOnly(model);
-  const transcribeLanguage = englishOnly
-    ? modelFamily(model) === "whisper"
-      ? "en"
-      : null
-    : language === "auto"
-      ? null
-      : language;
+  const transcribeLanguage = !model
+    ? null
+    : englishOnly
+      ? modelFamily(model) === "whisper"
+        ? "en"
+        : null
+      : language === "auto"
+        ? null
+        : language;
 
   // Preload the active model only when it is already downloaded.
   useEffect(() => {
     if (!engine.ready) return;
-    if (!activeDownloaded) {
+    if (!model || !activeDownloaded) {
       setModelReady(false);
       return;
     }
@@ -229,6 +227,13 @@ export default function App() {
     setDevice(value);
   }
 
+  // Clear a manual device choice and go back to auto-detection. The persisted
+  // settings are rewritten without a device on the next effect run.
+  function handleResetDevice() {
+    deviceTouchedRef.current = false;
+    setDevice(engine.suggestDevice || "wasm");
+  }
+
   if (!booted) {
     return (
       <Splash
@@ -245,8 +250,7 @@ export default function App() {
     <div className="app">
       <TopBar
         mode={live.liveActive ? "live" : "idle"}
-        modelLabel={activeDownloaded ? modelShortLabel(model) : null}
-        modelTitle={MODELS.find((m) => m.id === model)?.label}
+        modelLabel={model ? modelShortLabel(model) : null}
         deviceLabel={view.deviceLabel}
         deviceTitle={view.deviceHint}
         onOpenAbout={() => setAboutOpen(true)}
@@ -283,6 +287,7 @@ export default function App() {
         englishOnly={englishOnly}
         device={device}
         onDeviceChange={handleDeviceChange}
+        onResetDevice={handleResetDevice}
         gpuStatus={engine.gpuStatus}
         notice={view.deviceHint}
         locked={view.locked}

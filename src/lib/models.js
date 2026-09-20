@@ -200,6 +200,7 @@ export function isModelDownloaded(
   urls = [],
   parakeetCached = [],
 ) {
+  if (!modelId) return false;
   if (modelFamily(modelId) === "parakeet") {
     return parakeetCached.includes(modelId);
   }

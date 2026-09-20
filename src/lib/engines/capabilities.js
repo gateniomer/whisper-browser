@@ -26,11 +26,12 @@ export function withTimeout(promise, ms) {
 
 // Presence of navigator.gpu isn't enough — an adapter must actually be
 // grantable in this context (the worker can differ from the window). One
-// request only, so we don't spam "No available adapters".
+// request only, so we don't spam "No available adapters". The timeout is
+// generous because mobile GPUs can be slow to come up.
 export async function webgpuUsableHere() {
   if (!webgpuInThisContext()) return false;
   try {
-    const adapter = await withTimeout(navigator.gpu.requestAdapter(), 1500);
+    const adapter = await withTimeout(navigator.gpu.requestAdapter(), 2500);
     return !!adapter;
   } catch {
     return false;

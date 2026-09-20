@@ -113,10 +113,7 @@ export function createTransformersEngine(post) {
     if (sharedAdapter) return sharedAdapter;
     try {
       if (!webgpuInThisContext()) return null;
-      const adapter = await withTimeout(
-        navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
-        2500,
-      );
+      const adapter = await withTimeout(navigator.gpu.requestAdapter(), 2500);
       if (!adapter) return null;
       try {
         env.backends.onnx.webgpu.adapter = adapter;
