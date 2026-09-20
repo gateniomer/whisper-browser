@@ -1,5 +1,5 @@
 import { pipeline, env } from "@huggingface/transformers";
-import { dtypesFor, modelFamily, requiredFiles } from "./models.js";
+import { dtypesFor, modelFamily, requiredFiles, resolveDevice } from "./models.js";
 
 // Never look for models beside the app; always pull from the HF Hub.
 env.allowLocalModels = false;
@@ -198,12 +198,13 @@ export function createEngine(post) {
   }
 
   async function createPipeline({ model, device }) {
+    const dev = resolveDevice(model, device);
     progFiles = new Map();
-    progExpected = (await fullyCached({ model, device }))
+    progExpected = (await fullyCached({ model, device: dev }))
       ? 0
-      : await expectedBytes({ model, device });
+      : await expectedBytes({ model, device: dev });
     return pipeline("automatic-speech-recognition", model, {
-      device,
+      device: dev,
       dtype: dtypesFor(model, device),
       progress_callback: onProgress,
     });
@@ -243,10 +244,20 @@ export function createEngine(post) {
   // Build a pipeline, falling back from WebGPU to WASM if the GPU backend is
   // actually unusable. Returns the effective device for cache-key purposes.
   async function buildPipeline({ model, device }) {
-    if (device === "webgpu") {
+    const dev = resolveDevice(model, device);
+
+    if (dev !== device) {
+      // Large Whisper models requested on WebGPU run on CPU instead.
+      post({
+        type: "notice",
+        data: "Large models run on CPU (WASM) — WebGPU isn't reliable for them yet.",
+      });
+    }
+
+    if (dev === "webgpu") {
       const adapter = await acquireAdapter();
       if (!adapter) {
-        post({ type: "notice", data: fallbackNotice() });
+        post({ type: "gpu-fallback", data: fallbackNotice() });
         return { pipe: await createPipeline({ model, device: "wasm" }), device: "wasm" };
       }
       try {
@@ -255,15 +266,16 @@ export function createEngine(post) {
           device: "webgpu",
         };
       } catch {
-        post({ type: "notice", data: fallbackNotice() });
+        post({ type: "gpu-fallback", data: fallbackNotice() });
         return { pipe: await createPipeline({ model, device: "wasm" }), device: "wasm" };
       }
     }
-    return { pipe: await createPipeline({ model, device }), device };
+
+    return { pipe: await createPipeline({ model, device: dev }), device: dev };
   }
 
   async function getTranscriber({ model, device }) {
-    const key = `${model}|${device}`;
+    const key = `${model}|${resolveDevice(model, device)}`;
     if (transcriber && loadedKey === key) return transcriber;
 
     post({ type: "status", data: "loading" });
@@ -313,7 +325,19 @@ export function createEngine(post) {
       };
     }
 
-    const output = await pipe(msg.audio, options);
+    const output = await pipe(msg.audio, options).catch((err) => {
+      // GPU kernels can fail at run time (e.g. MatMulNBits on WebGPU). Drop the
+      // broken pipeline and tell the app to fall back to CPU.
+      if (loadedKey && loadedKey.endsWith("|webgpu")) {
+        transcriber = null;
+        loadedKey = null;
+        post({
+          type: "gpu-fallback",
+          data: "The GPU backend failed for this model — switching to CPU (WASM).",
+        });
+      }
+      throw err;
+    });
 
     if (msg.live && isNoiseOutput(output.text, msg.speechSec)) {
       output.text = "";

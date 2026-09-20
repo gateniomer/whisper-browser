@@ -79,31 +79,26 @@ const SUFFIX = {
 
 // Large models (Whisper Large/Turbo, Distil-Large) ship their fp32 encoder as
 // external data (encoder_model.onnx_data, ~2.5 GB), which can't load in the
-// browser. Use self-contained 4-bit weights for those.
+// browser, and their 4-bit WebGPU kernels (MatMulNBits) are unreliable. So they
+// run on CPU.
 function isLargeModel(modelId) {
   return /large|turbo/i.test(modelId);
 }
 
+export function resolveDevice(modelId, device) {
+  if (device === "webgpu" && isLargeModel(modelId)) return "wasm";
+  return device;
+}
+
 export function dtypesFor(modelId, device) {
-  if (device !== "webgpu") return "q8"; // compact q8 weights for CPU
-  if (isLargeModel(modelId)) {
-    return { encoder_model: "q4", decoder_model_merged: "q4" };
-  }
-  return "fp32";
+  return resolveDevice(modelId, device) === "webgpu" ? "fp32" : "q8";
 }
 
 export function requiredFiles(modelId, device) {
-  const dt = dtypesFor(modelId, device);
-  const suffix = (d) => SUFFIX[d] ?? "";
-  if (typeof dt === "string") {
-    return [
-      `encoder_model${suffix(dt)}.onnx`,
-      `decoder_model_merged${suffix(dt)}.onnx`,
-    ];
-  }
+  const suffix = SUFFIX[dtypesFor(modelId, device)] ?? "";
   return [
-    `encoder_model${suffix(dt.encoder_model)}.onnx`,
-    `decoder_model_merged${suffix(dt.decoder_model_merged)}.onnx`,
+    `encoder_model${suffix}.onnx`,
+    `decoder_model_merged${suffix}.onnx`,
   ];
 }
 
@@ -122,7 +117,7 @@ const SIZES_MB = {
 };
 
 export function sizeLabel(modelId, device) {
-  const mb = SIZES_MB[modelId]?.[device];
+  const mb = SIZES_MB[modelId]?.[resolveDevice(modelId, device)];
   if (!mb) return "";
   return mb >= 1000 ? `~${(mb / 1000).toFixed(1)} GB` : `~${mb} MB`;
 }

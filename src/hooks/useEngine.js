@@ -43,6 +43,8 @@ export function useEngine(callbacks = {}) {
           }
           break;
         case "status":
+          // A fresh load clears any previous informational notice.
+          if (msg.data === "loading") setNotice(null);
           setStatus(msg.data);
           break;
         case "result":
@@ -69,10 +71,15 @@ export function useEngine(callbacks = {}) {
           setDownloading(null);
           setError(msg.data);
           break;
-        case "notice":
+        case "gpu-fallback":
+          // The GPU backend is unusable here (or failed): switch to CPU.
           setNotice(msg.data);
           setGpuStatus("no-adapter");
           setSuggestDevice("wasm");
+          break;
+        case "notice":
+          // Informational only.
+          setNotice(msg.data);
           break;
         case "error":
           setError(msg.data);

@@ -31,18 +31,19 @@ backend (WebGPU uses higher precision; CPU uses 8-bit).
 | Whisper Tiny | 39M | ~151 MB | ~41 MB | multilingual, fastest Whisper |
 | Whisper Base | 74M | ~291 MB | ~77 MB | multilingual, default |
 | Whisper Small | 244M | ~968 MB | ~249 MB | multilingual, more accurate |
-| Whisper Large v3 Turbo | 809M | ~759 MB | ~1.1 GB | multilingual; 4-bit on WebGPU |
+| Whisper Large v3 Turbo | 809M | — | ~1.1 GB | multilingual; runs on CPU |
 | Moonshine Tiny | 27M | ~109 MB | ~28 MB | English, built for real-time |
 | Moonshine Base | 61M | ~247 MB | ~63 MB | English, real-time |
-| Distil-Whisper Large v3.5 | 756M | ~726 MB | ~1.0 GB | English; ~6x faster than large-v3 |
+| Distil-Whisper Large v3.5 | 756M | — | ~1.0 GB | English; ~6x faster than large-v3 |
 
 Whisper and Distil-Whisper are multilingual/English batch models driven in a
 low-latency streaming fashion (voice-activity segmentation). Moonshine is
 designed for live transcription and feels the most responsive.
 
-Large models ship their fp32 encoder as external data (~2.5 GB) that can't load
-in a browser, so Scribe automatically uses self-contained 4-bit weights for them
-on WebGPU.
+GPU sizes are `fp32`; CPU sizes are 8-bit (`q8`). Large models (Whisper
+Large/Turbo, Distil-Large) run on the CPU: their fp32 encoder is external data
+(~2.5 GB, too big for the browser) and their 4-bit WebGPU kernels are unreliable
+for Whisper, so Scribe uses the accurate q8 CPU weights instead.
 
 ## How it works
 
@@ -158,7 +159,7 @@ src/
 ## Configuration and tuning
 
 - **Models and precision** — `src/lib/models.js` is the single source of truth
-  for the catalog, dtype selection (`fp32`/`q4`/`q8`) and the exact ONNX files
+  for the catalog, dtype selection (`fp32`/`q8`) and the exact ONNX files
   each model/backend needs.
 - **Live segmentation** — tune `LIVE_TUNING` in `src/lib/constants.js`
   (`silenceMs`, `minSpeechSec`, `vadMin`, `noiseMult`, ...). Raising
@@ -179,9 +180,11 @@ src/
   `dom.webgpu.enabled` in `about:config`. Everything still works on CPU.
 - **Microphone unavailable** — the page must be served over HTTPS or
   `localhost`.
-- **A large model won't load** — the fp32 encoder for large models is external
-  data (~2.5 GB); Scribe uses 4-bit instead. If a partial download is left over,
-  delete the model in Settings and download again.
+- **A large model is slow** — large models (Whisper Large/Turbo, Distil-Large)
+  run on the CPU on purpose (their fp32 encoder is ~2.5 GB and their 4-bit
+  WebGPU kernels are unreliable). Use a smaller model if you need speed. If a
+  partial download is left over, delete the model in Settings and download
+  again.
 - **Slow on CPU** — choose a smaller model (Moonshine Tiny or Whisper Tiny).
   Serving with COOP/COEP headers enables multi-threaded WASM.
 
