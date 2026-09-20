@@ -1,11 +1,13 @@
 /**
  * Scribe — app shell.
  *
- * This file only wires things together. The heavier logic lives in:
- *   - hooks/useEngine       engine selection + messaging + model/cache state
- *   - hooks/useLiveCapture  live capture + VAD segmentation
- *   - lib/*                 framework-free helpers (models, webgpu, format, …)
- *   - components/*          presentational UI
+ * This file wires things together. The heavier logic lives in:
+ *   - hooks/usePersistentSettings  remembered model/language/device
+ *   - hooks/useEngine              engine selection + messaging + model/cache state
+ *   - hooks/useLiveCapture         live capture + VAD segmentation
+ *   - lib/viewState                pure derivation of the view state
+ *   - lib/*                        framework-free helpers
+ *   - components/*                 presentational UI
  */
 import { useEffect, useRef, useState } from "react";
 import TopBar from "./components/TopBar.jsx";
@@ -18,38 +20,29 @@ import Splash from "./components/Splash.jsx";
 import StatusStrip from "./components/StatusStrip.jsx";
 import { useEngine } from "./hooks/useEngine.js";
 import { useLiveCapture } from "./hooks/useLiveCapture.js";
+import { usePersistentSettings } from "./hooks/usePersistentSettings.js";
 import {
-  DEFAULT_MODEL,
   MODELS,
   isEnglishOnly,
   isModelDownloaded,
   modelFamily,
   modelShortLabel,
-  resolveDevice,
 } from "./lib/models.js";
-import { gpuMessage } from "./lib/webgpu.js";
-import { progressPercent } from "./lib/format.js";
+import { deriveViewState } from "./lib/viewState.js";
 
-const SETTINGS_KEY = "scribe:settings";
-
-function loadSettings() {
-  try {
-    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
-  } catch {
-    return {};
-  }
-}
+const MAX_TRANSCRIBE_BOOT_MS = 10000;
 
 export default function App() {
-  const savedRef = useRef(null);
-  if (savedRef.current === null) savedRef.current = loadSettings();
-  const saved = savedRef.current;
+  const {
+    model,
+    setModel,
+    language,
+    setLanguage,
+    device,
+    setDevice,
+    deviceTouchedRef,
+  } = usePersistentSettings();
 
-  const [model, setModel] = useState(() =>
-    MODELS.some((m) => m.id === saved.model) ? saved.model : DEFAULT_MODEL,
-  );
-  const [language, setLanguage] = useState(saved.language || "en");
-  const [device, setDevice] = useState(saved.device || "webgpu");
   const [segments, setSegments] = useState([]);
   const [partial, setPartial] = useState(null);
   const [pending, setPending] = useState(0);
@@ -62,25 +55,8 @@ export default function App() {
   const [aboutOpen, setAboutOpen] = useState(false);
   const [infoModel, setInfoModel] = useState(null);
 
-  const deviceTouchedRef = useRef(!!saved.device);
   const pendingRef = useRef(0);
   const endRef = useRef(null);
-
-  // Persist user choices so the app doesn't fall back to the default model.
-  useEffect(() => {
-    try {
-      localStorage.setItem(
-        SETTINGS_KEY,
-        JSON.stringify({
-          model,
-          language,
-          ...(deviceTouchedRef.current ? { device } : {}),
-        }),
-      );
-    } catch {
-      /* storage unavailable */
-    }
-  }, [model, language, device]);
 
   const engine = useEngine({
     onSegment: ({ id, offset, data }) => {
@@ -143,8 +119,8 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine.ready, model, device, engine.cacheUrls]);
 
-  // Boot screen: shown until the engine is chosen (GPU probe done) and the
-  // initially-selected model — if already downloaded — is loaded. Runs once.
+  // Boot splash: until the engine is chosen and the initial model (if already
+  // downloaded) is loaded.
   useEffect(() => {
     if (booted || !engine.ready) return;
     if (activeDownloaded && !modelReady) return;
@@ -154,7 +130,7 @@ export default function App() {
   // Safety net: never leave the user on the splash if the engine never reports.
   useEffect(() => {
     if (booted) return;
-    const t = setTimeout(() => setBooted(true), 10000);
+    const t = setTimeout(() => setBooted(true), MAX_TRANSCRIBE_BOOT_MS);
     return () => clearTimeout(t);
   }, [booted]);
 
@@ -215,54 +191,17 @@ export default function App() {
     pendingRef.current = pending;
   }, [pending]);
 
-  const busy =
-    engine.status === "loading" ||
-    engine.status === "transcribing" ||
-    pending > 0;
-  const pct = progressPercent(engine.progress);
-  const locked = busy || live.liveActive || starting;
-  const showEmpty = !live.liveActive && !starting && segments.length === 0;
-
-  // Persistent GPU/CPU indicator, based on what the active model will use.
-  const onGPU =
-    device === "webgpu" &&
-    engine.gpuStatus === "ready" &&
-    resolveDevice(model, "webgpu") === "webgpu";
-  const deviceLabel =
-    engine.gpuStatus === "checking" ? null : onGPU ? "GPU" : "CPU";
-  const deviceHint =
-    engine.notice ||
-    (engine.gpuStatus !== "ready" && engine.gpuStatus !== "checking"
-      ? gpuMessage(engine.gpuStatus)
-      : null);
-
-  // What the stage's central card should say when there's no transcript yet.
-  const downloadingLabel = engine.downloading
-    ? (MODELS.find((m) => m.id === engine.downloading)?.label ??
-      engine.downloading)
-    : null;
-  let stageState;
-  if (engine.downloading) {
-    stageState = { kind: "downloading", label: downloadingLabel, pct };
-  } else if (
-    !engine.error &&
-    (engine.status === "loading" || (activeDownloaded && !modelReady))
-  ) {
-    stageState = { kind: "loading" };
-  } else if (!activeDownloaded) {
-    stageState = { kind: "no-model" };
-  } else {
-    stageState = { kind: "ready" };
-  }
-
-  // Transient status shown under the header, even mid-transcript.
-  const stripState = engine.downloading
-    ? { kind: "downloading", label: downloadingLabel, pct }
-    : engine.status === "loading"
-      ? { kind: "loading" }
-      : pending > 0
-        ? { kind: "transcribing" }
-        : null;
+  const view = deriveViewState({
+    engine,
+    model,
+    device,
+    pending,
+    modelReady,
+    liveActive: live.liveActive,
+    starting,
+    segmentCount: segments.length,
+    activeDownloaded,
+  });
 
   async function toggleLive() {
     if (live.liveActive) {
@@ -308,18 +247,18 @@ export default function App() {
         mode={live.liveActive ? "live" : "idle"}
         modelLabel={activeDownloaded ? modelShortLabel(model) : null}
         modelTitle={MODELS.find((m) => m.id === model)?.label}
-        deviceLabel={deviceLabel}
-        deviceTitle={deviceHint}
+        deviceLabel={view.deviceLabel}
+        deviceTitle={view.deviceHint}
         onOpenAbout={() => setAboutOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <StatusStrip state={stripState} />
+      <StatusStrip state={view.stripState} />
 
       <Stage
         error={engine.error}
-        showEmpty={showEmpty}
-        state={stageState}
+        showEmpty={view.showEmpty}
+        state={view.stageState}
         onChooseModel={() => setSettingsOpen(true)}
         liveActive={live.liveActive}
         segments={segments}
@@ -332,7 +271,7 @@ export default function App() {
         starting={starting}
         elapsed={elapsed}
         level={level}
-        disabled={!live.liveActive && (busy || !modelReady || starting)}
+        disabled={!live.liveActive && (view.busy || !modelReady || starting)}
         onToggle={toggleLive}
       />
 
@@ -345,8 +284,8 @@ export default function App() {
         device={device}
         onDeviceChange={handleDeviceChange}
         gpuStatus={engine.gpuStatus}
-        notice={deviceHint}
-        locked={locked}
+        notice={view.deviceHint}
+        locked={view.locked}
         manager={{
           models: MODELS,
           device,
@@ -354,8 +293,8 @@ export default function App() {
           cacheUrls: engine.cacheUrls,
           parakeetCached: engine.parakeetCached,
           downloading: engine.downloading,
-          pct,
-          locked,
+          pct: view.pct,
+          locked: view.locked,
           liveActive: live.liveActive,
           gpuReady: engine.gpuStatus === "ready",
           onDownload: (id) => engine.downloadModel({ model: id, device }),

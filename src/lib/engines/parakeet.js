@@ -96,15 +96,8 @@ export function createParakeetEngine(post) {
   }
 
   async function handle(msg) {
+    // `caps` is answered by the default (transformers) backend in the router.
     switch (msg.type) {
-      case "caps":
-        post({
-          type: "caps",
-          webgpu: typeof navigator !== "undefined" && "gpu" in navigator,
-          secure: typeof self !== "undefined" ? !!self.isSecureContext : true,
-        });
-        return;
-
       case "list":
         await publishCached();
         return;

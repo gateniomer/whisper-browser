@@ -7,10 +7,22 @@ import { pipeline, env } from "@huggingface/transformers";
 import {
   dtypesFor,
   modelFamily,
-  requiredFiles,
   requiresWebGPU,
   resolveDevice,
 } from "../models.js";
+import { isNoiseOutput } from "../noise.js";
+import {
+  isSecureContextHere,
+  webgpuInThisContext,
+  webgpuUsableHere,
+  withTimeout,
+} from "./capabilities.js";
+import {
+  createProgressTracker,
+  deleteModelFiles,
+  listCache,
+  modelCache,
+} from "./modelCache.js";
 
 // Never look for models beside the app; always pull from the HF Hub.
 env.allowLocalModels = false;
@@ -40,111 +52,31 @@ try {
   /* older/newer transformers may not expose this */
 }
 
-// ---------------------------------------------------------------------------
-// A CacheStorage-backed cache that we fully control, so the UI can list and
-// delete models. transformers.js reads/writes through this interface.
-// ---------------------------------------------------------------------------
-const CACHE_NAME = "whisper-models";
-
-function cacheStore() {
-  return caches.open(CACHE_NAME);
-}
-
-const modelCache = {
-  async match(request) {
-    const cache = await cacheStore();
-    return (await cache.match(request)) || undefined;
-  },
-  async put(request, response) {
-    const cache = await cacheStore();
-    await cache.put(request, response);
-  },
-  async delete(request) {
-    const cache = await cacheStore();
-    return cache.delete(request);
-  },
-};
-
+// Route transformers.js model I/O through our own cache so the app can manage
+// (list/delete) downloaded models.
 env.useCustomCache = true;
 env.useBrowserCache = false;
 env.customCache = modelCache;
 
-async function listCache() {
-  try {
-    const cache = await cacheStore();
-    const keys = await cache.keys();
-    return keys.map((r) => r.url);
-  } catch {
-    return [];
+/** Decode options differ by model family (see the catalog in ../models.js). */
+function decodeOptions(msg) {
+  const family = modelFamily(msg.model);
+  if (family === "whisper") {
+    // Bound the decoder by audio length so a bad segment can't run long.
+    const seconds = msg.audio.length / 16000;
+    return {
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      return_timestamps: !msg.live,
+      task: "transcribe",
+      max_new_tokens: Math.min(448, Math.max(16, Math.ceil(seconds * 6) + 8)),
+      ...(msg.language ? { language: msg.language } : {}),
+    };
   }
-}
-
-// ---------------------------------------------------------------------------
-// The engine. Create one per context (a Web Worker or the main thread) and give
-// it a `post` function for outgoing messages.
-// ---------------------------------------------------------------------------
-const NOISE_OUTPUTS = new Set([
-  "",
-  "you",
-  "thank you",
-  "thanks",
-  "thank you.",
-  "bye",
-  "bye bye",
-  "okay",
-  "yeah",
-  "hmm",
-  "um",
-  "uh",
-  "oh",
-  "music",
-  "you.",
-  "thank you for watching",
-  "please subscribe",
-  "subscribe",
-]);
-
-function isNoiseOutput(text, speechSec) {
-  if (typeof speechSec !== "number" || speechSec >= 1) return false;
-  const norm = (text || "")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N} ]/gu, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return NOISE_OUTPUTS.has(norm);
-}
-
-function webgpuInThisContext() {
-  return typeof navigator !== "undefined" && "gpu" in navigator;
-}
-
-// Presence of navigator.gpu isn't enough — an adapter must actually be
-// grantable in this context (the worker can differ from the window). One
-// request only, so we don't spam "No available adapters".
-async function webgpuUsableHere() {
-  if (!webgpuInThisContext()) return false;
-  try {
-    const adapter = await withTimeout(navigator.gpu.requestAdapter(), 1500);
-    return !!adapter;
-  } catch {
-    return false;
+  if (family === "cohere") {
+    return { ...(msg.language ? { language: msg.language } : {}) };
   }
-}
-
-function isSecureContextHere() {
-  if (typeof self !== "undefined" && "isSecureContext" in self) {
-    return self.isSecureContext;
-  }
-  return true;
-}
-
-// requestAdapter() can hang in some environments (headless, VMs, odd drivers).
-// Never let that block the engine from reporting its capabilities.
-function withTimeout(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => setTimeout(() => resolve(null), ms)),
-  ]);
+  return {}; // moonshine takes plain audio
 }
 
 export function createTransformersEngine(post) {
@@ -152,6 +84,7 @@ export function createTransformersEngine(post) {
   let loadedKey = null;
   let warmed = false;
   let partialQueued = false;
+  let sharedAdapter = null;
 
   // Transcriptions run one at a time; live mode can queue several segments.
   let queue = Promise.resolve();
@@ -161,98 +94,25 @@ export function createTransformersEngine(post) {
     return run;
   }
 
-  // Progress arrives per file, so a single file's percentage jumps 0→100 over
-  // and over. Aggregate bytes across every file, and use the model's real file
-  // sizes (from the HF API) as the denominator so the bar only moves forward.
-  const CONFIG_FILES = new Set([
-    "config.json",
-    "preprocessor_config.json",
-    "generation_config.json",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "added_tokens.json",
-    "vocab.json",
-    "merges.txt",
-    "normalizer.json",
-  ]);
-
-  let progFiles = new Map();
-  let progExpected = 0;
-
-  async function expectedBytes({ model, device }) {
-    try {
-      const res = await fetch(`https://huggingface.co/api/models/${model}?blobs=true`);
-      if (!res.ok) return 0;
-      const info = await res.json();
-      const wanted = new Set(requiredFiles(model, device));
-      let total = 0;
-      for (const s of info.siblings || []) {
-        const name = String(s.rfilename || "");
-        const base = name.replace(/^onnx\//, "");
-        // Count the model file, its external-data shards (name.onnx_data), and
-        // the small config files.
-        const isData = base.endsWith("_data") && wanted.has(base.slice(0, -5));
-        if (wanted.has(base) || isData || CONFIG_FILES.has(base)) {
-          total += s.size || 0;
-        }
-      }
-      return total;
-    } catch {
-      return 0;
-    }
-  }
-
-  // True when every required ONNX file is already cached, so a load won't hit
-  // the network (and we can skip the size lookup entirely).
-  async function fullyCached({ model, device }) {
-    const needs = requiredFiles(model, device);
-    const urls = await listCache();
-    return needs.every((n) =>
-      urls.some((u) => u.includes(`/${model}/`) && u.endsWith(n)),
-    );
-  }
-
-  function onProgress(p) {
-    if (p.file) {
-      const e = progFiles.get(p.file) || { loaded: 0, total: 0 };
-      if (typeof p.loaded === "number") e.loaded = p.loaded;
-      if (typeof p.total === "number" && p.total) e.total = p.total;
-      if (p.status === "done" && e.total) e.loaded = e.total;
-      progFiles.set(p.file, e);
-    }
-    let loaded = 0;
-    let total = 0;
-    for (const e of progFiles.values()) {
-      loaded += e.loaded;
-      total += e.total;
-    }
-    const denom = Math.max(progExpected, total);
-    const overall = denom > 0 ? Math.min(100, (loaded / denom) * 100) : null;
-    post({ type: "progress", data: { ...p, overall } });
-  }
+  const progress = createProgressTracker(post);
 
   async function createPipeline({ model, device }) {
     const dev = resolveDevice(model, device);
-    progFiles = new Map();
-    progExpected = (await fullyCached({ model, device: dev }))
-      ? 0
-      : await expectedBytes({ model, device: dev });
+    await progress.prepare({ model, device: dev });
     return pipeline("automatic-speech-recognition", model, {
       device: dev,
       dtype: dtypesFor(model, device),
-      progress_callback: onProgress,
+      progress_callback: progress.callback,
     });
   }
 
   // Acquire one adapter and hand it to ONNX Runtime, so ORT never makes its
   // own request (which is what fails with "Failed to get GPU adapter" when the
   // browser exposes navigator.gpu but can't actually grant an adapter).
-  let sharedAdapter = null;
   async function acquireAdapter() {
     if (sharedAdapter) return sharedAdapter;
     try {
-      if (typeof navigator === "undefined" || !("gpu" in navigator)) return null;
+      if (!webgpuInThisContext()) return null;
       const adapter = await withTimeout(
         navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
         2500,
@@ -289,7 +149,7 @@ export function createTransformersEngine(post) {
     }
 
     if (dev !== device) {
-      // Large Whisper models requested on WebGPU run on CPU instead.
+      // e.g. a large Whisper model requested on WebGPU runs on CPU instead.
       post({
         type: "notice",
         data: "Large models run on CPU (WASM) — WebGPU isn't reliable for them yet.",
@@ -298,18 +158,18 @@ export function createTransformersEngine(post) {
 
     if (dev === "webgpu") {
       const adapter = await acquireAdapter();
-      if (!adapter) {
-        post({ type: "gpu-fallback", data: fallbackNotice() });
-        return { pipe: await createPipeline({ model, device: "wasm" }), device: "wasm" };
-      }
       try {
+        if (!adapter) throw new Error("no adapter");
         return {
           pipe: await createPipeline({ model, device: "webgpu" }),
           device: "webgpu",
         };
       } catch {
         post({ type: "gpu-fallback", data: fallbackNotice() });
-        return { pipe: await createPipeline({ model, device: "wasm" }), device: "wasm" };
+        return {
+          pipe: await createPipeline({ model, device: "wasm" }),
+          device: "wasm",
+        };
       }
     }
 
@@ -341,52 +201,23 @@ export function createTransformersEngine(post) {
     return transcriber;
   }
 
-  async function deleteModel(modelId) {
-    const cache = await cacheStore();
-    const keys = await cache.keys();
-    let n = 0;
-    for (const req of keys) {
-      if (req.url.includes(`/${modelId}/`)) {
-        await cache.delete(req);
-        n++;
-      }
-    }
+  async function dropTranscriber(modelId) {
     if (loadedKey && loadedKey.startsWith(`${modelId}|`)) {
       transcriber = null;
       loadedKey = null;
     }
-    return n;
   }
 
-  async function handleTranscribe(msg) {
+  async function runTranscribe(msg) {
     const pipe = await getTranscriber(msg);
 
     // Interim decodes run often; skip the status churn for them.
     if (!msg.partial) post({ type: "status", data: "transcribing" });
 
-    // Decode options differ by model family. Whisper (and distil-whisper) take
-    // chunking/language/timestamps; live segments skip timestamps because the
-    // app timestamps them by segment offset and timestamp decoding costs
-    // accuracy on short clips. Cohere takes a language hint. Moonshine takes
-    // plain audio.
-    const family = modelFamily(msg.model);
-    let options = {};
-    if (family === "whisper") {
-      // Bound the decoder by audio length so a bad segment can't run long.
-      const seconds = msg.audio.length / 16000;
-      options = {
-        chunk_length_s: 30,
-        stride_length_s: 5,
-        return_timestamps: !msg.live,
-        task: "transcribe",
-        max_new_tokens: Math.min(448, Math.max(16, Math.ceil(seconds * 6) + 8)),
-        ...(msg.language ? { language: msg.language } : {}),
-      };
-    } else if (family === "cohere") {
-      options = { ...(msg.language ? { language: msg.language } : {}) };
-    }
-
-    const output = await pipe(msg.audio, options).catch((err) => {
+    let output;
+    try {
+      output = await pipe(msg.audio, decodeOptions(msg));
+    } catch (err) {
       // GPU kernels can fail at run time (e.g. MatMulNBits on WebGPU). Drop the
       // broken pipeline and tell the app to fall back to CPU.
       if (loadedKey && loadedKey.endsWith("|webgpu")) {
@@ -398,7 +229,7 @@ export function createTransformersEngine(post) {
         });
       }
       throw err;
-    });
+    }
 
     if (msg.live && isNoiseOutput(output.text, msg.speechSec)) {
       output.text = "";
@@ -419,89 +250,89 @@ export function createTransformersEngine(post) {
   }
 
   async function handle(msg) {
-    if (msg.type === "caps") {
-      post({
-        type: "caps",
-        webgpu: await webgpuUsableHere(),
-        secure: isSecureContextHere(),
-      });
-      return;
-    }
+    switch (msg.type) {
+      case "caps":
+        post({
+          type: "caps",
+          webgpu: await webgpuUsableHere(),
+          secure: isSecureContextHere(),
+        });
+        return;
 
-    if (msg.type === "load") {
-      try {
-        await enqueue(() => getTranscriber(msg));
-        post({ type: "loaded", key: loadedKey });
-      } catch (err) {
-        post({ type: "error", data: String(err?.message || err), fatal: true });
-      }
-      return;
-    }
-
-    if (msg.type === "list") {
-      post({ type: "cache-list", data: await listCache() });
-      return;
-    }
-
-    if (msg.type === "download") {
-      enqueue(async () => {
+      case "load":
         try {
-          post({ type: "status", data: "loading" });
-          const { pipe } = await buildPipeline({
-            model: msg.model,
-            device: msg.device,
-          });
-          try {
-            pipe.dispose?.();
-          } catch {
-            /* ignore */
-          }
-          post({ type: "downloaded", model: msg.model });
+          await enqueue(() => getTranscriber(msg));
+          post({ type: "loaded", key: loadedKey });
         } catch (err) {
           post({
-            type: "download-error",
-            model: msg.model,
+            type: "error",
             data: String(err?.message || err),
+            fatal: true,
           });
-        } finally {
-          post({ type: "status", data: "idle" });
-          post({ type: "cache-list", data: await listCache() });
         }
-      });
-      return;
-    }
+        return;
 
-    if (msg.type === "delete") {
-      enqueue(async () => {
-        await deleteModel(msg.model);
+      case "list":
         post({ type: "cache-list", data: await listCache() });
-      });
-      return;
-    }
+        return;
 
-    if (msg.type !== "transcribe") return;
-
-    // Interim decodes are best-effort: keep at most one queued so they can't
-    // pile up behind (or in front of) committed segments.
-    if (msg.partial) {
-      if (partialQueued) return;
-      partialQueued = true;
-      enqueue(() => handleTranscribe(msg))
-        .catch(() => {})
-        .finally(() => {
-          partialQueued = false;
+      case "download":
+        enqueue(async () => {
+          try {
+            post({ type: "status", data: "loading" });
+            const { pipe } = await buildPipeline({
+              model: msg.model,
+              device: msg.device,
+            });
+            pipe.dispose?.();
+            post({ type: "downloaded", model: msg.model });
+          } catch (err) {
+            post({
+              type: "download-error",
+              model: msg.model,
+              data: String(err?.message || err),
+            });
+          } finally {
+            post({ type: "status", data: "idle" });
+            post({ type: "cache-list", data: await listCache() });
+          }
         });
-      return;
-    }
+        return;
 
-    try {
-      await enqueue(() => handleTranscribe(msg));
-    } catch (err) {
-      post({
-        type: "error",
-        data: String(err?.message || err),
-        live: !!msg.live,
-      });
+      case "delete":
+        enqueue(async () => {
+          await deleteModelFiles(msg.model);
+          await dropTranscriber(msg.model);
+          post({ type: "cache-list", data: await listCache() });
+        });
+        return;
+
+      case "transcribe":
+        // Interim decodes are best-effort: keep at most one queued so they
+        // can't pile up behind (or in front of) committed segments.
+        if (msg.partial) {
+          if (partialQueued) return;
+          partialQueued = true;
+          enqueue(() => runTranscribe(msg))
+            .catch(() => {})
+            .finally(() => {
+              partialQueued = false;
+            });
+          return;
+        }
+        try {
+          await enqueue(() => runTranscribe(msg));
+        } catch (err) {
+          post({
+            type: "error",
+            data: String(err?.message || err),
+            live: !!msg.live,
+          });
+        }
+        return;
+
+      default:
+        return;
     }
   }
 
