@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import workletUrl from "./pcm-worklet.js?url";
+import { createEngine } from "./engine.js";
 
 const MODELS = [
   { id: "onnx-community/whisper-base", label: "Whisper Base", size: "~140 MB" },
@@ -39,7 +40,7 @@ function requiredFiles(device) {
 }
 
 export default function App() {
-  const workerRef = useRef(null);
+  const engineRef = useRef(null);
   const recorderRef = useRef(null);
   const liveRef = useRef(null);
   const liveActiveRef = useRef(false);
@@ -74,48 +75,22 @@ export default function App() {
   const [modelReady, setModelReady] = useState(false);
   const [cacheUrls, setCacheUrls] = useState([]);
   const [downloading, setDownloading] = useState(null);
+  const [engineReady, setEngineReady] = useState(false);
 
   const deviceTouchedRef = useRef(false);
 
-  function applyGpuStatus(status) {
-    setGpuStatus(status);
-    if (deviceTouchedRef.current) return; // respect a manual device choice
-    if (status === "ready") {
-      setDevice("webgpu");
-      setNotice(null);
-    } else {
-      setDevice("wasm");
-      setNotice(gpuMessage(status));
-    }
-  }
-
-  // Probe WebGPU, retrying past the transient null that a single early call can
-  // hit, and re-check when the tab regains focus.
+  // Choose where inference runs, then keep one engine:
+  //  - WebGPU in a worker, when the browser exposes WorkerNavigator.gpu (Chrome);
+  //  - otherwise WebGPU on the main thread, which every WebGPU browser exposes;
+  //  - otherwise WASM in a worker (keeps the UI responsive).
+  // The worker reports its own capability via a "caps" message first.
   useEffect(() => {
-    let cancelled = false;
-    const run = () =>
-      probeWebGPU().then((status) => {
-        if (!cancelled) applyGpuStatus(status);
-      });
-    run();
-    const onVisible = () => {
-      if (document.visibilityState === "visible") run();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      cancelled = true;
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    let disposed = false;
+    let worker = null;
+    let localEngine = null;
 
-  useEffect(() => {
-    const worker = new Worker(new URL("./worker.js", import.meta.url), {
-      type: "module",
-    });
-
-    worker.onmessage = (e) => {
-      const { type, data, live, id, offset } = e.data;
+    function handleMessage(msg) {
+      const { type, data, live, id, offset } = msg;
       if (type === "progress") {
         setProgress(data);
         if (data.status === "progress" || data.status === "initiate") {
@@ -135,7 +110,7 @@ export default function App() {
           );
         }
       } else if (type === "loaded") {
-        loadedKeyRef.current = e.data.key ?? null;
+        loadedKeyRef.current = msg.key ?? null;
         const waiters = loadWaitersRef.current;
         loadWaitersRef.current = [];
         waiters.forEach((w) => w.resolve());
@@ -154,23 +129,77 @@ export default function App() {
         setError(data);
         setStatus("idle");
         if (live) setPending((p) => Math.max(0, p - 1));
-        if (e.data.fatal) {
+        if (msg.fatal) {
           const waiters = loadWaitersRef.current;
           loadWaitersRef.current = [];
           waiters.forEach((w) => w.reject(new Error(data)));
         }
       }
+    }
+
+    const workerAdapter = {
+      postMessage: (msg, transfer) => worker?.postMessage(msg, transfer),
+    };
+
+    function useLocalEngine() {
+      localEngine = createEngine(handleMessage);
+      engineRef.current = {
+        postMessage: (msg) => {
+          localEngine.handle(msg);
+        },
+      };
+      worker?.terminate();
+      worker = null;
+    }
+
+    async function decide(caps) {
+      const windowStatus = await probeWebGPU();
+      if (disposed) return;
+
+      if (caps.webgpu) {
+        engineRef.current = workerAdapter;
+        setGpuStatus("ready");
+        if (!deviceTouchedRef.current) setDevice("webgpu");
+      } else if (windowStatus === "ready") {
+        // The worker can't use WebGPU, but the window can.
+        useLocalEngine();
+        setGpuStatus("ready");
+        setNotice(null);
+        if (!deviceTouchedRef.current) setDevice("webgpu");
+      } else {
+        engineRef.current = workerAdapter;
+        setGpuStatus(windowStatus);
+        setNotice(gpuMessage(windowStatus));
+        if (!deviceTouchedRef.current) setDevice("wasm");
+      }
+
+      setEngineReady(true);
+      engineRef.current.postMessage({ type: "list" });
+    }
+
+    worker = new Worker(new URL("./worker.js", import.meta.url), {
+      type: "module",
+    });
+    worker.onmessage = (e) => {
+      if (e.data?.type === "caps") {
+        decide(e.data);
+        return;
+      }
+      handleMessage(e.data);
     };
     worker.onerror = (e) => setError(e.message);
+    worker.postMessage({ type: "caps" });
 
-    workerRef.current = worker;
-    worker.postMessage({ type: "list" });
-    return () => worker.terminate();
+    return () => {
+      disposed = true;
+      worker?.terminate();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Preload the selected model only if it is already downloaded.
   useEffect(() => {
-    if (gpuStatus === "checking" || !workerRef.current) return;
+    if (!engineReady || !engineRef.current) return;
     if (!isModelDownloaded(model)) {
       setModelReady(false);
       return;
@@ -188,7 +217,7 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gpuStatus, model, device, cacheUrls]);
+  }, [engineReady, model, device, cacheUrls]);
 
   useEffect(() => {
     if (!recording) return;
@@ -231,18 +260,18 @@ export default function App() {
     if (loadedKeyRef.current === key) return Promise.resolve();
     return new Promise((resolve, reject) => {
       loadWaitersRef.current.push({ resolve, reject });
-      workerRef.current.postMessage({ type: "load", model, device });
+      engineRef.current.postMessage({ type: "load", model, device });
     });
   }
 
   function downloadModel(id) {
     setError(null);
     setDownloading(id);
-    workerRef.current.postMessage({ type: "download", model: id, device });
+    engineRef.current.postMessage({ type: "download", model: id, device });
   }
 
   function deleteModel(id) {
-    workerRef.current.postMessage({ type: "delete", model: id });
+    engineRef.current.postMessage({ type: "delete", model: id });
   }
 
   async function startRecording() {
@@ -263,7 +292,7 @@ export default function App() {
           const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
           const audio = await blobToMono16k(blob);
           setStatus("transcribing");
-          workerRef.current.postMessage(
+          engineRef.current.postMessage(
             {
               type: "transcribe",
               audio,
@@ -319,7 +348,7 @@ export default function App() {
     const id = ++segmentIdRef.current;
     const { model: m, device: d, language: l } = liveConfigRef.current;
     setPending((p) => p + 1);
-    workerRef.current.postMessage(
+    engineRef.current.postMessage(
       {
         type: "transcribe",
         audio,
