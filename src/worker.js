@@ -1,7 +1,62 @@
 import { pipeline, env } from "@huggingface/transformers";
 
-// Never look for models beside the app; always pull from the HF Hub and cache.
+// Never look for models beside the app; always pull from the HF Hub.
 env.allowLocalModels = false;
+
+// ---------------------------------------------------------------------------
+// A CacheStorage-backed cache that we fully control, so the UI can list and
+// delete models. transformers.js reads/writes through this interface.
+// ---------------------------------------------------------------------------
+const CACHE_NAME = "whisper-models";
+
+function cacheStore() {
+  return caches.open(CACHE_NAME);
+}
+
+const modelCache = {
+  async match(request) {
+    const cache = await cacheStore();
+    return (await cache.match(request)) || undefined;
+  },
+  async put(request, response) {
+    const cache = await cacheStore();
+    await cache.put(request, response);
+  },
+  async delete(request) {
+    const cache = await cacheStore();
+    return cache.delete(request);
+  },
+};
+
+env.useCustomCache = true;
+env.useBrowserCache = false;
+env.customCache = modelCache;
+
+async function listCache() {
+  const cache = await cacheStore();
+  const keys = await cache.keys();
+  return keys.map((r) => r.url);
+}
+
+async function deleteModel(modelId) {
+  const cache = await cacheStore();
+  const keys = await cache.keys();
+  let n = 0;
+  for (const req of keys) {
+    if (req.url.includes(`/${modelId}/`)) {
+      await cache.delete(req);
+      n++;
+    }
+  }
+  // If the deleted model is currently loaded, drop it.
+  if (loadedKey && loadedKey.startsWith(`${modelId}|`)) {
+    transcriber = null;
+    loadedKey = null;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
 
 let transcriber = null;
 let loadedKey = null;
@@ -135,6 +190,47 @@ self.onmessage = async (event) => {
         fatal: true,
       });
     }
+    return;
+  }
+
+  // List everything currently stored.
+  if (msg.type === "list") {
+    self.postMessage({ type: "cache-list", urls: await listCache() });
+    return;
+  }
+
+  // Download a model into the cache without keeping it loaded.
+  if (msg.type === "download") {
+    enqueue(async () => {
+      try {
+        self.postMessage({ type: "status", data: "loading" });
+        const p = await createPipeline({ model: msg.model, device: msg.device });
+        try {
+          p.dispose?.();
+        } catch {
+          /* ignore */
+        }
+        self.postMessage({ type: "downloaded", model: msg.model });
+      } catch (err) {
+        self.postMessage({
+          type: "download-error",
+          model: msg.model,
+          data: String(err?.message || err),
+        });
+      } finally {
+        self.postMessage({ type: "status", data: "idle" });
+        self.postMessage({ type: "cache-list", urls: await listCache() });
+      }
+    });
+    return;
+  }
+
+  // Remove a model from the cache.
+  if (msg.type === "delete") {
+    enqueue(async () => {
+      await deleteModel(msg.model);
+      self.postMessage({ type: "cache-list", urls: await listCache() });
+    });
     return;
   }
 

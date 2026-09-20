@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import workletUrl from "./pcm-worklet.js?url";
 
 const MODELS = [
-  { id: "onnx-community/whisper-base", label: "Whisper Base (~140 MB) — fast" },
-  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny (~40 MB) — fastest (mobile)" },
-  { id: "onnx-community/whisper-small", label: "Whisper Small (~500 MB) — balanced" },
+  { id: "onnx-community/whisper-base", label: "Whisper Base", size: "~140 MB" },
+  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny", size: "~40 MB" },
+  { id: "onnx-community/whisper-small", label: "Whisper Small", size: "~500 MB" },
   {
     id: "onnx-community/whisper-large-v3-turbo",
-    label: "Whisper Large v3 Turbo (~1.5 GB) — best",
+    label: "Whisper Large v3 Turbo",
+    size: "~1.5 GB",
   },
 ];
 
@@ -29,6 +30,13 @@ const TRAILING_SILENCE_MS = 200; // keep only this much silence after speech end
 const PRE_ROLL_MS = 150; // keep this much audio before speech starts
 const MIN_SPEECH_SEC = 0.5; // ignore segments with less actual speech than this
 const MAX_SEGMENT_SEC = 12; // force a cut so segments stay short
+
+// The .onnx files transformers.js loads depend on the backend.
+function requiredFiles(device) {
+  return device === "webgpu"
+    ? ["encoder_model.onnx", "decoder_model_merged.onnx"]
+    : ["encoder_model_quantized.onnx", "decoder_model_merged_quantized.onnx"];
+}
 
 export default function App() {
   const workerRef = useRef(null);
@@ -64,6 +72,8 @@ export default function App() {
   const [gpuOk, setGpuOk] = useState(true);
   const [gpuChecked, setGpuChecked] = useState(false);
   const [modelReady, setModelReady] = useState(false);
+  const [cacheUrls, setCacheUrls] = useState([]);
+  const [downloading, setDownloading] = useState(null);
 
   // Pick a sensible default device and warn if WebGPU isn't usable here.
   useEffect(() => {
@@ -121,6 +131,13 @@ export default function App() {
         const waiters = loadWaitersRef.current;
         loadWaitersRef.current = [];
         waiters.forEach((w) => w.resolve());
+      } else if (type === "cache-list") {
+        setCacheUrls(data);
+      } else if (type === "downloaded") {
+        setDownloading(null);
+      } else if (type === "download-error") {
+        setDownloading(null);
+        setError(data);
       } else if (type === "notice") {
         setNotice(data);
         setGpuOk(false);
@@ -139,13 +156,17 @@ export default function App() {
     worker.onerror = (e) => setError(e.message);
 
     workerRef.current = worker;
+    worker.postMessage({ type: "list" });
     return () => worker.terminate();
   }, []);
 
-  // Preload the model as soon as we know which device to use, and whenever the
-  // model or device changes, so starting a session is instant.
+  // Preload the selected model only if it is already downloaded.
   useEffect(() => {
     if (!gpuChecked || !workerRef.current) return;
+    if (!isModelDownloaded(model)) {
+      setModelReady(false);
+      return;
+    }
     let cancelled = false;
     setModelReady(false);
     ensureLoaded()
@@ -159,7 +180,7 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gpuChecked, model, device]);
+  }, [gpuChecked, model, device, cacheUrls]);
 
   useEffect(() => {
     if (!recording) return;
@@ -188,6 +209,32 @@ export default function App() {
       }
     };
   }, []);
+
+  function isModelDownloaded(id) {
+    const needs = requiredFiles(device);
+    return needs.every((n) =>
+      cacheUrls.some((u) => u.includes(`/${id}/`) && u.endsWith(n)),
+    );
+  }
+
+  function ensureLoaded() {
+    const key = `${model}|${device}`;
+    if (loadedKeyRef.current === key) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      loadWaitersRef.current.push({ resolve, reject });
+      workerRef.current.postMessage({ type: "load", model, device });
+    });
+  }
+
+  function downloadModel(id) {
+    setError(null);
+    setDownloading(id);
+    workerRef.current.postMessage({ type: "download", model: id, device });
+  }
+
+  function deleteModel(id) {
+    workerRef.current.postMessage({ type: "delete", model: id });
+  }
 
   async function startRecording() {
     setError(null);
@@ -338,21 +385,12 @@ export default function App() {
     if (bufferedSec > MAX_SEGMENT_SEC) flushSegment(sampleRate);
   }
 
-  function ensureLoaded() {
-    const key = `${model}|${device}`;
-    if (loadedKeyRef.current === key) return Promise.resolve();
-    return new Promise((resolve, reject) => {
-      loadWaitersRef.current.push({ resolve, reject });
-      workerRef.current.postMessage({ type: "load", model, device });
-    });
-  }
-
   async function startLive() {
     setError(null);
     setSegments([]);
     setPending(0);
     try {
-      // Load the model first so we're ready before capturing audio.
+      // Make sure the selected (downloaded) model is loaded before capturing.
       await ensureLoaded();
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -439,30 +477,83 @@ export default function App() {
       ? Math.round(progress.progress)
       : null;
   const locked = busy || recording || liveActive;
+  const activeDownloaded = isModelDownloaded(model);
+
+  const statusText = downloading
+    ? `Downloading… ${pct ?? 0}%`
+    : liveActive
+      ? "Listening…"
+      : !activeDownloaded
+        ? "Model not downloaded"
+        : !modelReady
+          ? "Loading model…"
+          : statusLabel(status);
 
   return (
     <div className="app">
       <h1>Whisper in the Browser</h1>
       <p className="sub">
-        Record or transcribe live, locally. Audio never leaves your machine.
+        Download, manage, and run speech recognition locally. Audio never leaves
+        your machine.
       </p>
 
-      <div className="controls">
-        <label>
-          Model
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={locked}
-          >
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="manager">
+        <div className="managerHead">
+          <h2>Models</h2>
+          <span className="status">Stored in your browser</span>
+        </div>
+        <ul className="modelList">
+          {MODELS.map((m) => {
+            const downloaded = isModelDownloaded(m.id);
+            const isActive = m.id === model;
+            const isDling = downloading === m.id;
+            return (
+              <li key={m.id} className={isActive ? "model active" : "model"}>
+                <div className="modelInfo">
+                  <span className="modelName">{m.label}</span>
+                  <span className="modelMeta">{m.size}</span>
+                </div>
+                <div className="modelActions">
+                  <span className={downloaded ? "badge ok" : "badge"}>
+                    {isDling
+                      ? `Downloading ${pct ?? 0}%`
+                      : downloaded
+                        ? "Downloaded"
+                        : "Not downloaded"}
+                  </span>
+                  {!downloaded && (
+                    <button
+                      className="ghost"
+                      onClick={() => downloadModel(m.id)}
+                      disabled={!!downloading}
+                    >
+                      Download
+                    </button>
+                  )}
+                  {downloaded && (
+                    <button
+                      className="ghost"
+                      onClick={() => deleteModel(m.id)}
+                      disabled={!!downloading || (isActive && liveActive)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                  <button
+                    className="ghost"
+                    onClick={() => setModel(m.id)}
+                    disabled={isActive || !downloaded || locked}
+                  >
+                    {isActive ? "Active" : "Use"}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
 
+      <div className="controls">
         <label>
           Language
           <select
@@ -510,22 +601,16 @@ export default function App() {
           {liveActive ? "Stop live" : "Start live"}
         </button>
 
-        <span className="status">
-          {liveActive
-            ? "Listening…"
-            : !modelReady
-              ? "Loading model…"
-              : statusLabel(status)}
-        </span>
+        <span className="status">{statusText}</span>
       </div>
 
-      {!modelReady && (
+      {(downloading || status === "loading") && (
         <div className="progress">
           <div className="bar">
             <div style={{ width: `${pct ?? 0}%` }} />
           </div>
           <span>
-            {progress?.file || progress?.name || "Loading model"}
+            {progress?.file || progress?.name || "Loading"}
             {pct != null ? ` — ${pct}%` : ""}
           </span>
         </div>
