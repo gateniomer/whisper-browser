@@ -1,0 +1,632 @@
+import { useEffect, useRef, useState } from "react";
+import workletUrl from "./pcm-worklet.js?url";
+
+const MODELS = [
+  { id: "onnx-community/whisper-base", label: "Whisper Base (~140 MB) — fast" },
+  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny (~40 MB) — fastest (mobile)" },
+  { id: "onnx-community/whisper-small", label: "Whisper Small (~500 MB) — balanced" },
+  {
+    id: "onnx-community/whisper-large-v3-turbo",
+    label: "Whisper Large v3 Turbo (~1.5 GB) — best",
+  },
+];
+
+const LANGUAGES = [
+  { id: "en", label: "English" },
+  { id: "auto", label: "Auto-detect" },
+  { id: "zh", label: "Chinese" },
+  { id: "es", label: "Spanish" },
+  { id: "fr", label: "French" },
+  { id: "de", label: "German" },
+];
+
+// Live segmentation tuning.
+const VAD_MIN = 0.01; // absolute RMS floor for speech
+const VAD_NOISE_MULT = 3; // speech must exceed the noise floor by this factor
+const VAD_RELEASE = 0.6; // hysteresis: speech ends below this fraction of the start threshold
+const SILENCE_MS = 700; // pause long enough to end a segment
+const TRAILING_SILENCE_MS = 200; // keep only this much silence after speech ends
+const PRE_ROLL_MS = 150; // keep this much audio before speech starts
+const MIN_SPEECH_SEC = 0.5; // ignore segments with less actual speech than this
+const MAX_SEGMENT_SEC = 12; // force a cut so segments stay short
+
+export default function App() {
+  const workerRef = useRef(null);
+  const recorderRef = useRef(null);
+  const liveRef = useRef(null);
+  const liveActiveRef = useRef(false);
+  const liveConfigRef = useRef({ model: null, device: null, language: null });
+  const speechChunksRef = useRef([]);
+  const preRollRef = useRef([]);
+  const speechMsRef = useRef(0);
+  const silenceMsRef = useRef(0);
+  const speakingRef = useRef(false);
+  const liveOffsetRef = useRef(0);
+  const segmentIdRef = useRef(0);
+  const noiseFloorRef = useRef(0.005);
+  const vadActiveRef = useRef(false);
+  const loadWaitersRef = useRef([]);
+  const loadedKeyRef = useRef(null);
+
+  const [status, setStatus] = useState("idle"); // idle | loading | transcribing
+  const [progress, setProgress] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [model, setModel] = useState(MODELS[0].id);
+  const [language, setLanguage] = useState("en");
+  const [device, setDevice] = useState("webgpu");
+  const [result, setResult] = useState(null);
+  const [segments, setSegments] = useState([]);
+  const [pending, setPending] = useState(0);
+  const [liveActive, setLiveActive] = useState(false);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [gpuOk, setGpuOk] = useState(true);
+  const [gpuChecked, setGpuChecked] = useState(false);
+  const [modelReady, setModelReady] = useState(false);
+
+  // Pick a sensible default device and warn if WebGPU isn't usable here.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let ok = false;
+      try {
+        const adapter = navigator.gpu && (await navigator.gpu.requestAdapter());
+        ok = !!adapter;
+      } catch {
+        ok = false;
+      }
+      if (cancelled) return;
+      setGpuOk(ok);
+      setGpuChecked(true);
+      if (!ok) {
+        setDevice("wasm");
+        setNotice(
+          "WebGPU isn't available on this device — using CPU (WASM). It works, just slower.",
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const worker = new Worker(new URL("./worker.js", import.meta.url), {
+      type: "module",
+    });
+
+    worker.onmessage = (e) => {
+      const { type, data, live, id, offset } = e.data;
+      if (type === "progress") {
+        setProgress(data);
+        if (data.status === "progress" || data.status === "initiate") {
+          setStatus("loading");
+        }
+      } else if (type === "status") {
+        setStatus(data);
+      } else if (type === "result") {
+        setResult(data);
+        setStatus("idle");
+      } else if (type === "segment") {
+        setPending((p) => Math.max(0, p - 1));
+        const text = (data.text || "").trim();
+        if (text) {
+          setSegments((prev) =>
+            [...prev, { id, offset, text }].sort((a, b) => a.id - b.id),
+          );
+        }
+      } else if (type === "loaded") {
+        loadedKeyRef.current = e.data.key ?? null;
+        const waiters = loadWaitersRef.current;
+        loadWaitersRef.current = [];
+        waiters.forEach((w) => w.resolve());
+      } else if (type === "notice") {
+        setNotice(data);
+        setGpuOk(false);
+        setDevice("wasm");
+      } else if (type === "error") {
+        setError(data);
+        setStatus("idle");
+        if (live) setPending((p) => Math.max(0, p - 1));
+        if (e.data.fatal) {
+          const waiters = loadWaitersRef.current;
+          loadWaitersRef.current = [];
+          waiters.forEach((w) => w.reject(new Error(data)));
+        }
+      }
+    };
+    worker.onerror = (e) => setError(e.message);
+
+    workerRef.current = worker;
+    return () => worker.terminate();
+  }, []);
+
+  // Preload the model as soon as we know which device to use, and whenever the
+  // model or device changes, so starting a session is instant.
+  useEffect(() => {
+    if (!gpuChecked || !workerRef.current) return;
+    let cancelled = false;
+    setModelReady(false);
+    ensureLoaded()
+      .then(() => {
+        if (!cancelled) setModelReady(true);
+      })
+      .catch(() => {
+        if (!cancelled) setModelReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gpuChecked, model, device]);
+
+  useEffect(() => {
+    if (!recording) return;
+    setElapsed(0);
+    const t = setInterval(() => setElapsed((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [recording]);
+
+  // Tear down the live capture graph on unmount.
+  useEffect(() => {
+    return () => {
+      liveActiveRef.current = false;
+      const live = liveRef.current;
+      if (live) {
+        try {
+          live.node.port.onmessage = null;
+          live.source.disconnect();
+          live.highpass?.disconnect();
+          live.node.disconnect();
+          live.gain.disconnect();
+          live.stream.getTracks().forEach((t) => t.stop());
+          live.ctx.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    };
+  }, []);
+
+  async function startRecording() {
+    setError(null);
+    setResult(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const chunks = [];
+      const recorder = new MediaRecorder(stream);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size) chunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        try {
+          const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+          const audio = await blobToMono16k(blob);
+          setStatus("transcribing");
+          workerRef.current.postMessage(
+            {
+              type: "transcribe",
+              audio,
+              model,
+              device,
+              language: language === "auto" ? null : language,
+            },
+            [audio.buffer],
+          );
+        } catch (err) {
+          setError(String(err?.message || err));
+          setStatus("idle");
+        }
+      };
+
+      recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+    } catch (err) {
+      setError(String(err?.message || err));
+    }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop();
+    setRecording(false);
+  }
+
+  function flushSegment(sampleRate) {
+    const chunks = speechChunksRef.current;
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const speechSec = speechMsRef.current / 1000;
+
+    speechChunksRef.current = [];
+    preRollRef.current = [];
+    speechMsRef.current = 0;
+    silenceMsRef.current = 0;
+    speakingRef.current = false;
+
+    // Drop blips and noise bursts: require a real amount of speech energy.
+    if (speechSec < MIN_SPEECH_SEC || total === 0) return;
+
+    const audio = new Float32Array(total);
+    let at = 0;
+    for (const c of chunks) {
+      audio.set(c, at);
+      at += c.length;
+    }
+
+    const offset = liveOffsetRef.current;
+    liveOffsetRef.current += total / sampleRate;
+
+    const id = ++segmentIdRef.current;
+    const { model: m, device: d, language: l } = liveConfigRef.current;
+    setPending((p) => p + 1);
+    workerRef.current.postMessage(
+      {
+        type: "transcribe",
+        audio,
+        model: m,
+        device: d,
+        language: l,
+        live: true,
+        id,
+        offset,
+        speechSec,
+      },
+      [audio.buffer],
+    );
+  }
+
+  function onFrame(samples, sampleRate) {
+    const frameMs = (samples.length / sampleRate) * 1000;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    const rms = Math.sqrt(sum / samples.length);
+
+    // Adaptive noise floor: track the ambient level while not in speech, then
+    // require speech to rise clearly above it. Hysteresis stops rapid toggling.
+    if (!vadActiveRef.current) {
+      noiseFloorRef.current =
+        0.95 * noiseFloorRef.current + 0.05 * Math.min(rms, 0.2);
+    }
+    const startTh = Math.max(VAD_MIN, noiseFloorRef.current * VAD_NOISE_MULT);
+    const isSpeech = vadActiveRef.current
+      ? rms > startTh * VAD_RELEASE
+      : rms > startTh;
+    if (isSpeech && !vadActiveRef.current) vadActiveRef.current = true;
+    if (!isSpeech && vadActiveRef.current) vadActiveRef.current = false;
+
+    if (!speakingRef.current) {
+      if (!isSpeech) {
+        // Remember a little audio so we don't clip the start of a word.
+        const pre = preRollRef.current;
+        pre.push(samples);
+        const maxPre = Math.ceil((PRE_ROLL_MS / 1000) * sampleRate);
+        let preTotal = pre.reduce((n, c) => n + c.length, 0);
+        while (preTotal > maxPre && pre.length) {
+          preTotal -= pre.shift().length;
+        }
+        return;
+      }
+      // Speech onset.
+      speakingRef.current = true;
+      speechChunksRef.current = [...preRollRef.current, samples];
+      preRollRef.current = [];
+      speechMsRef.current = frameMs;
+      silenceMsRef.current = 0;
+    } else if (isSpeech) {
+      speechChunksRef.current.push(samples);
+      speechMsRef.current += frameMs;
+      silenceMsRef.current = 0;
+    } else {
+      silenceMsRef.current += frameMs;
+      // Keep only a short bit of trailing silence (long silence makes Whisper
+      // hallucinate things like "you").
+      if (silenceMsRef.current <= TRAILING_SILENCE_MS) {
+        speechChunksRef.current.push(samples);
+      }
+      if (silenceMsRef.current > SILENCE_MS) {
+        flushSegment(sampleRate);
+        return;
+      }
+    }
+
+    const bufferedSec =
+      speechChunksRef.current.reduce((n, c) => n + c.length, 0) / sampleRate;
+    if (bufferedSec > MAX_SEGMENT_SEC) flushSegment(sampleRate);
+  }
+
+  function ensureLoaded() {
+    const key = `${model}|${device}`;
+    if (loadedKeyRef.current === key) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      loadWaitersRef.current.push({ resolve, reject });
+      workerRef.current.postMessage({ type: "load", model, device });
+    });
+  }
+
+  async function startLive() {
+    setError(null);
+    setSegments([]);
+    setPending(0);
+    try {
+      // Load the model first so we're ready before capturing audio.
+      await ensureLoaded();
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false,
+        },
+      });
+
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      await ctx.audioWorklet.addModule(workletUrl);
+
+      const source = ctx.createMediaStreamSource(stream);
+      // Cut low rumble/hum so it doesn't pump the VAD.
+      const highpass = ctx.createBiquadFilter();
+      highpass.type = "highpass";
+      highpass.frequency.value = 85;
+      highpass.Q.value = 0.7;
+
+      const node = new AudioWorkletNode(ctx, "pcm-processor");
+      const gain = ctx.createGain();
+      gain.gain.value = 0; // keeps the graph pulled without echoing mic to speakers
+      source.connect(highpass);
+      highpass.connect(node);
+      node.connect(gain);
+      gain.connect(ctx.destination);
+
+      liveConfigRef.current = {
+        model,
+        device,
+        language: language === "auto" ? null : language,
+      };
+      speechChunksRef.current = [];
+      preRollRef.current = [];
+      speechMsRef.current = 0;
+      silenceMsRef.current = 0;
+      speakingRef.current = false;
+      liveOffsetRef.current = 0;
+      segmentIdRef.current = 0;
+      noiseFloorRef.current = 0.005;
+      vadActiveRef.current = false;
+
+      node.port.onmessage = (e) => {
+        if (liveActiveRef.current) onFrame(e.data, ctx.sampleRate);
+      };
+
+      liveRef.current = { ctx, stream, source, highpass, node, gain };
+      liveActiveRef.current = true;
+      setLiveActive(true);
+    } catch (err) {
+      setError(String(err?.message || err));
+    }
+  }
+
+  async function stopLive() {
+    liveActiveRef.current = false;
+    setLiveActive(false);
+
+    const live = liveRef.current;
+    if (live && speechChunksRef.current.length) {
+      flushSegment(live.ctx.sampleRate);
+    }
+    if (live) {
+      try {
+        live.node.port.onmessage = null;
+        live.source.disconnect();
+        live.highpass?.disconnect();
+        live.node.disconnect();
+        live.gain.disconnect();
+        live.stream.getTracks().forEach((t) => t.stop());
+        await live.ctx.close();
+      } catch {
+        /* already closed */
+      }
+      liveRef.current = null;
+    }
+  }
+
+  const busy = status === "loading" || status === "transcribing";
+  const pct =
+    progress && typeof progress.progress === "number"
+      ? Math.round(progress.progress)
+      : null;
+  const locked = busy || recording || liveActive;
+
+  return (
+    <div className="app">
+      <h1>Whisper in the Browser</h1>
+      <p className="sub">
+        Record or transcribe live, locally. Audio never leaves your machine.
+      </p>
+
+      <div className="controls">
+        <label>
+          Model
+          <select
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            disabled={locked}
+          >
+            {MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Language
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            disabled={locked}
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Device
+          <select
+            value={device}
+            onChange={(e) => setDevice(e.target.value)}
+            disabled={locked}
+          >
+            <option value="webgpu" disabled={!gpuOk}>
+              WebGPU (GPU){gpuOk ? "" : " — unavailable"}
+            </option>
+            <option value="wasm">WASM (CPU)</option>
+          </select>
+        </label>
+      </div>
+
+      <div className="recordRow">
+        <button
+          className={recording ? "rec stop" : "rec"}
+          onClick={recording ? stopRecording : startRecording}
+          disabled={busy || liveActive || !modelReady}
+        >
+          {recording ? `Stop (${elapsed}s)` : "Record"}
+        </button>
+
+        <button
+          className={liveActive ? "rec stop" : "rec live"}
+          onClick={liveActive ? stopLive : startLive}
+          disabled={!liveActive && (busy || recording || !modelReady)}
+        >
+          {liveActive ? "Stop live" : "Start live"}
+        </button>
+
+        <span className="status">
+          {liveActive
+            ? "Listening…"
+            : !modelReady
+              ? "Loading model…"
+              : statusLabel(status)}
+        </span>
+      </div>
+
+      {!modelReady && (
+        <div className="progress">
+          <div className="bar">
+            <div style={{ width: `${pct ?? 0}%` }} />
+          </div>
+          <span>
+            {progress?.file || progress?.name || "Loading model"}
+            {pct != null ? ` — ${pct}%` : ""}
+          </span>
+        </div>
+      )}
+
+      {notice && <p className="notice">{notice}</p>}
+      {error && <p className="error">{error}</p>}
+
+      {result && (
+        <div className="result">
+          <div className="resultHead">
+            <h2>Transcript</h2>
+            <button
+              className="ghost"
+              onClick={() => navigator.clipboard.writeText(result.text || "")}
+            >
+              Copy
+            </button>
+          </div>
+          <p className="text">{result.text?.trim() || "(no speech detected)"}</p>
+
+          {result.chunks?.length > 1 && (
+            <ul className="chunks">
+              {result.chunks.map((c, i) => (
+                <li key={i}>
+                  <time>{fmt(c.timestamp?.[0])}</time>
+                  <span>{c.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {(liveActive || segments.length > 0) && (
+        <div className="result">
+          <div className="resultHead">
+            <h2>Live transcript</h2>
+            <div className="headActions">
+              {pending > 0 && <span className="status">{pending} queued…</span>}
+              <button
+                className="ghost"
+                onClick={() =>
+                  navigator.clipboard.writeText(
+                    segments.map((s) => `[${fmt(s.offset)}] ${s.text}`).join("\n"),
+                  )
+                }
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+
+          {segments.length === 0 ? (
+            <p className="text dim">
+              {liveActive ? "Listening… start speaking." : "No speech captured."}
+            </p>
+          ) : (
+            <ul className="chunks live">
+              {segments.map((s) => (
+                <li key={s.id}>
+                  <time>{fmt(s.offset)}</time>
+                  <span>{s.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function statusLabel(status) {
+  if (status === "loading") return "Loading model…";
+  if (status === "transcribing") return "Transcribing…";
+  return "Ready";
+}
+
+function fmt(seconds) {
+  if (seconds == null) return "--:--";
+  const s = Math.floor(seconds % 60);
+  const m = Math.floor(seconds / 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+async function blobToMono16k(blob) {
+  const arrayBuffer = await blob.arrayBuffer();
+
+  const ctx = new AudioContext();
+  const decoded = await ctx.decodeAudioData(arrayBuffer);
+  await ctx.close();
+
+  const targetRate = 16000;
+  const length = Math.max(1, Math.ceil(decoded.duration * targetRate));
+  const offline = new OfflineAudioContext(1, length, targetRate);
+  const source = offline.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offline.destination);
+  source.start();
+
+  const rendered = await offline.startRendering();
+  return rendered.getChannelData(0);
+}
