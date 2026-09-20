@@ -1,4 +1,4 @@
-import { createEngine } from "./engine.js";
+import { createEngine } from "./lib/engine.js";
 
 const engine = createEngine((msg) => self.postMessage(msg));
 

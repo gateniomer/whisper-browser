@@ -88,13 +88,13 @@ function isNoiseOutput(text, speechSec) {
   return NOISE_OUTPUTS.has(norm);
 }
 
-export function webgpuInThisContext() {
+function webgpuInThisContext() {
   return typeof navigator !== "undefined" && "gpu" in navigator;
 }
 
 // Presence of navigator.gpu isn't enough — verify an adapter is actually
 // grantable in this context (worker vs main thread can differ).
-export async function webgpuUsableHere() {
+async function webgpuUsableHere() {
   if (!webgpuInThisContext()) return false;
   try {
     const adapter = await navigator.gpu.requestAdapter();
@@ -159,6 +159,16 @@ export function createEngine(post) {
     }
   }
 
+  // True when every required ONNX file is already cached, so a load won't hit
+  // the network (and we can skip the size lookup entirely).
+  async function fullyCached({ model, device }) {
+    const needs = requiredFiles(model, device);
+    const urls = await listCache();
+    return needs.every((n) =>
+      urls.some((u) => u.includes(`/${model}/`) && u.endsWith(n)),
+    );
+  }
+
   function onProgress(p) {
     if (p.file) {
       const e = progFiles.get(p.file) || { loaded: 0, total: 0 };
@@ -180,7 +190,9 @@ export function createEngine(post) {
 
   async function createPipeline({ model, device }) {
     progFiles = new Map();
-    progExpected = await expectedBytes({ model, device });
+    progExpected = (await fullyCached({ model, device }))
+      ? 0
+      : await expectedBytes({ model, device });
     return pipeline("automatic-speech-recognition", model, {
       device,
       dtype: dtypesFor(model, device),
@@ -276,10 +288,14 @@ export function createEngine(post) {
 
     post({ type: "status", data: "transcribing" });
 
+    // Live segments are timestamped by the app (segment offset), so we don't ask
+    // Whisper for timestamps there — timestamp decoding costs accuracy, and it
+    // hurts most on the short clips live mode produces. One-shot transcription
+    // keeps timestamps because the UI shows them.
     const output = await pipe(msg.audio, {
       chunk_length_s: 30,
       stride_length_s: 5,
-      return_timestamps: true,
+      return_timestamps: !msg.live,
       task: "transcribe",
       ...(msg.language ? { language: msg.language } : {}),
     });

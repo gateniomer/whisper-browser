@@ -98,6 +98,10 @@ select {
   flex: 0 0 auto;
 }
 
+.led-idle {
+  background: #5b6377;
+}
+
 .led-rec {
   background: var(--danger);
   animation: pulse-rec 1.3s ease-out infinite;
@@ -432,7 +436,9 @@ select {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   transform: translate(-50%, 100%);
-  transition: transform 0.28s cubic-bezier(0.22, 0.8, 0.22, 1);
+  visibility: hidden; /* keep the closed sheet out of the tab order */
+  transition: transform 0.28s cubic-bezier(0.22, 0.8, 0.22, 1),
+    visibility 0s linear 0.28s;
   background: #12151c;
   border: 1px solid var(--border);
   border-bottom: none;
@@ -443,6 +449,9 @@ select {
 
 .sheet.open {
   transform: translate(-50%, 0);
+  visibility: visible;
+  transition: transform 0.28s cubic-bezier(0.22, 0.8, 0.22, 1),
+    visibility 0s;
 }
 
 .sheetHandle {

@@ -55,3 +55,11 @@ export function sizeLabel(modelId, device) {
   if (!mb) return "";
   return mb >= 1000 ? `~${(mb / 1000).toFixed(1)} GB` : `~${mb} MB`;
 }
+
+// A model counts as downloaded when both required ONNX files are in the cache.
+export function isModelDownloaded(modelId, device, urls = []) {
+  return requiredFiles(modelId, device).every((name) =>
+    urls.some((u) => u.includes(`/${modelId}/`) && u.endsWith(name)),
+  );
+}
+
