@@ -22,7 +22,6 @@ export default function SettingsSheet({
       <Backdrop open={open} onClick={onClose} />
       <section
         className={"sheet" + (open ? " open" : "")}
-        aria-hidden={!open}
         inert={!open}
       >
         <div className="sheetHandle" />

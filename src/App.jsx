@@ -13,6 +13,7 @@ import Stage from "./components/Stage.jsx";
 import Dock from "./components/Dock.jsx";
 import SettingsSheet from "./components/SettingsSheet.jsx";
 import AboutDialog from "./components/AboutDialog.jsx";
+import ModelInfoDialog from "./components/ModelInfoDialog.jsx";
 import Splash from "./components/Splash.jsx";
 import StatusStrip from "./components/StatusStrip.jsx";
 import { useEngine } from "./hooks/useEngine.js";
@@ -23,13 +24,32 @@ import {
   isEnglishOnly,
   isModelDownloaded,
   modelFamily,
+  modelShortLabel,
+  resolveDevice,
 } from "./lib/models.js";
-import { progressPercent, statusLabel } from "./lib/format.js";
+import { gpuMessage } from "./lib/webgpu.js";
+import { progressPercent } from "./lib/format.js";
+
+const SETTINGS_KEY = "scribe:settings";
+
+function loadSettings() {
+  try {
+    return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
 
 export default function App() {
-  const [model, setModel] = useState(DEFAULT_MODEL);
-  const [language, setLanguage] = useState("en");
-  const [device, setDevice] = useState("webgpu");
+  const savedRef = useRef(null);
+  if (savedRef.current === null) savedRef.current = loadSettings();
+  const saved = savedRef.current;
+
+  const [model, setModel] = useState(() =>
+    MODELS.some((m) => m.id === saved.model) ? saved.model : DEFAULT_MODEL,
+  );
+  const [language, setLanguage] = useState(saved.language || "en");
+  const [device, setDevice] = useState(saved.device || "webgpu");
   const [segments, setSegments] = useState([]);
   const [pending, setPending] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -39,9 +59,26 @@ export default function App() {
   const [booted, setBooted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [infoModel, setInfoModel] = useState(null);
 
-  const deviceTouchedRef = useRef(false);
+  const deviceTouchedRef = useRef(!!saved.device);
   const endRef = useRef(null);
+
+  // Persist user choices so the app doesn't fall back to the default model.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        SETTINGS_KEY,
+        JSON.stringify({
+          model,
+          language,
+          ...(deviceTouchedRef.current ? { device } : {}),
+        }),
+      );
+    } catch {
+      /* storage unavailable */
+    }
+  }, [model, language, device]);
 
   const engine = useEngine({
     onSegment: ({ id, offset, data }) => {
@@ -158,6 +195,19 @@ export default function App() {
   const locked = busy || live.liveActive || starting;
   const showEmpty = !live.liveActive && !starting && segments.length === 0;
 
+  // Persistent GPU/CPU indicator, based on what the active model will use.
+  const onGPU =
+    device === "webgpu" &&
+    engine.gpuStatus === "ready" &&
+    resolveDevice(model, "webgpu") === "webgpu";
+  const deviceLabel =
+    engine.gpuStatus === "checking" ? null : onGPU ? "GPU" : "CPU";
+  const deviceHint =
+    engine.notice ||
+    (engine.gpuStatus !== "ready" && engine.gpuStatus !== "checking"
+      ? gpuMessage(engine.gpuStatus)
+      : null);
+
   // What the stage's central card should say when there's no transcript yet.
   const downloadingLabel = engine.downloading
     ? (MODELS.find((m) => m.id === engine.downloading)?.label ??
@@ -185,20 +235,6 @@ export default function App() {
       : pending > 0
         ? { kind: "transcribing" }
         : null;
-
-  const statusText = engine.downloading
-    ? `Downloading… ${pct ?? 0}%`
-    : starting
-      ? "Starting…"
-      : live.liveActive
-        ? pending > 0
-          ? `Listening · ${pending} queued`
-          : "Listening…"
-        : !activeDownloaded
-          ? "Model not downloaded"
-          : !modelReady
-            ? "Loading model…"
-            : statusLabel(engine.status);
 
   async function toggleLive() {
     if (live.liveActive) {
@@ -240,8 +276,10 @@ export default function App() {
     <div className="app">
       <TopBar
         mode={live.liveActive ? "live" : "idle"}
-        statusText={statusText}
-        notice={engine.notice}
+        modelLabel={activeDownloaded ? modelShortLabel(model) : null}
+        modelTitle={MODELS.find((m) => m.id === model)?.label}
+        deviceLabel={deviceLabel}
+        deviceTitle={deviceHint}
         onOpenAbout={() => setAboutOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
@@ -276,7 +314,7 @@ export default function App() {
         device={device}
         onDeviceChange={handleDeviceChange}
         gpuStatus={engine.gpuStatus}
-        notice={engine.notice}
+        notice={deviceHint}
         locked={locked}
         manager={{
           models: MODELS,
@@ -292,10 +330,18 @@ export default function App() {
           onDownload: (id) => engine.downloadModel({ model: id, device }),
           onDelete: engine.deleteModel,
           onUse: setModel,
+          onInfo: setInfoModel,
         }}
       />
 
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
+
+      <ModelInfoDialog
+        model={infoModel}
+        device={device}
+        gpuReady={engine.gpuStatus === "ready"}
+        onClose={() => setInfoModel(null)}
+      />
     </div>
   );
 }

@@ -103,8 +103,9 @@ function webgpuInThisContext() {
   return typeof navigator !== "undefined" && "gpu" in navigator;
 }
 
-// Presence of navigator.gpu isn't enough — verify an adapter is actually
-// grantable in this context (worker vs main thread can differ).
+// Presence of navigator.gpu isn't enough — an adapter must actually be
+// grantable in this context (the worker can differ from the window). One
+// request only, so we don't spam "No available adapters".
 async function webgpuUsableHere() {
   if (!webgpuInThisContext()) return false;
   try {

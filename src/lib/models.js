@@ -9,48 +9,71 @@ export const DEFAULT_MODEL = "onnx-community/whisper-base";
 // family: "whisper" (incl. distil-whisper) or "moonshine" — controls which
 //         decode options are valid.
 // englishOnly: model only supports English, so "language" shouldn't be offered.
+// Each model: family, englishOnly, requiresWebGPU, languages, and a short
+// description shown in the in-app info popup.
 export const MODELS = [
   {
     id: "onnx-community/whisper-tiny",
     label: "Whisper Tiny — 39M",
     family: "whisper",
     englishOnly: false,
+    languages: "Multilingual (99+)",
+    description:
+      "The smallest and fastest Whisper. Great for quick drafts and low-power devices, but the least accurate of the Whisper family.",
   },
   {
     id: "onnx-community/whisper-base",
     label: "Whisper Base — 74M",
     family: "whisper",
     englishOnly: false,
+    languages: "Multilingual (99+)",
+    description:
+      "A balanced default: good accuracy while staying small and fast on both GPU and CPU.",
   },
   {
     id: "onnx-community/whisper-small",
     label: "Whisper Small — 244M",
     family: "whisper",
     englishOnly: false,
+    languages: "Multilingual (99+)",
+    description:
+      "Noticeably more accurate than Base, and still quick on a GPU. A good accuracy/speed step up.",
   },
   {
     id: "onnx-community/whisper-large-v3-turbo",
     label: "Whisper Large v3 Turbo — 809M",
     family: "whisper",
     englishOnly: false,
+    languages: "Multilingual (99+)",
+    description:
+      "Distilled from Whisper large-v3: near-large accuracy at several times the speed. Large, so it runs on the CPU here.",
   },
   {
     id: "onnx-community/moonshine-tiny-ONNX",
     label: "Moonshine Tiny — 27M · real-time",
     family: "moonshine",
     englishOnly: true,
+    languages: "English",
+    description:
+      "A tiny English model built for real-time transcription. The fastest option, ideal for live captions on modest hardware.",
   },
   {
     id: "onnx-community/moonshine-base-ONNX",
     label: "Moonshine Base — 61M · real-time",
     family: "moonshine",
     englishOnly: true,
+    languages: "English",
+    description:
+      "English, designed for streaming. More accurate than Tiny while still very fast — a great default for live English.",
   },
   {
     id: "distil-whisper/distil-large-v3.5-ONNX",
     label: "Distil-Whisper Large v3.5 — 756M",
     family: "whisper",
     englishOnly: true,
+    languages: "English",
+    description:
+      "A distilled large-v3 for English, roughly 6x faster than the original. High accuracy, but large, so it runs on the CPU here.",
   },
   {
     id: "onnx-community/cohere-transcribe-03-2026-ONNX",
@@ -58,18 +81,27 @@ export const MODELS = [
     family: "cohere",
     englishOnly: false,
     requiresWebGPU: true,
+    languages: "14 languages",
+    description:
+      "Cohere's dedicated speech model with best-in-class accuracy across 14 languages. Very large, and it requires a WebGPU-capable browser.",
   },
   {
     id: "parakeet-tdt-0.6b-v2",
     label: "Parakeet TDT 0.6B v2 — English",
     family: "parakeet",
     englishOnly: true,
+    languages: "English",
+    description:
+      "NVIDIA Parakeet TDT for English: very high accuracy and fast. Experimental integration in this app.",
   },
   {
     id: "parakeet-tdt-0.6b-v3",
     label: "Parakeet TDT 0.6B v3 — multilingual",
     family: "parakeet",
     englishOnly: false,
+    languages: "25 European languages",
+    description:
+      "NVIDIA Parakeet TDT, multilingual (25 European languages). High accuracy and fast. Experimental integration in this app.",
   },
 ];
 
@@ -81,6 +113,12 @@ export function modelFamily(modelId) {
 
 export function isEnglishOnly(modelId) {
   return META.get(modelId)?.englishOnly ?? false;
+}
+
+// Short display name without the parameter/size suffix (e.g. "Whisper Base").
+export function modelShortLabel(modelId) {
+  const label = META.get(modelId)?.label ?? modelId;
+  return label.split(" — ")[0].trim();
 }
 
 // Some models need GPU-only kernels (e.g. Cohere's quantized embeddings use

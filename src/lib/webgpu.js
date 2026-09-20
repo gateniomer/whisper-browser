@@ -15,9 +15,12 @@ function withTimeout(promise, ms) {
 }
 
 // Returns one of: "ready" | "no-adapter" | "unsupported" | "insecure".
-// requestAdapter() can resolve null (or, in some Firefox builds, reject) if it
-// is called before the GPU stack is ready, so retry with backoff before giving
-// up. navigator.gpu is absent entirely in insecure contexts.
+//
+// A single early requestAdapter() can resolve null while the GPU process and
+// driver are still starting up, so retry a few times before concluding there
+// is no GPU. We also try to create a device, since some browsers hand out an
+// adapter but fail at that step (which is what ONNX Runtime needs).
+// navigator.gpu is absent entirely in insecure contexts.
 export async function probeWebGPU() {
   if (typeof navigator === "undefined" || !("gpu" in navigator)) {
     return typeof window !== "undefined" && !window.isSecureContext
@@ -31,8 +34,6 @@ export async function probeWebGPU() {
         3000,
       );
       if (adapter) {
-        // Some browsers/drivers hand out an adapter but fail when a device is
-        // actually created, which is the step ONNX Runtime needs.
         try {
           const device = await withTimeout(adapter.requestDevice(), 3000);
           device.destroy?.();
@@ -44,7 +45,7 @@ export async function probeWebGPU() {
     } catch {
       // Some builds reject instead of resolving null; treat as "not yet".
     }
-    await sleep(400 * 2 ** attempt);
+    if (attempt < 2) await sleep(400 * 2 ** attempt);
   }
   return "no-adapter";
 }

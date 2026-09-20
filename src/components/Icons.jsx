@@ -75,3 +75,62 @@ export function StopIcon({ size = 26 } = {}) {
     </svg>
   );
 }
+
+export function DownloadIcon({ size = 20 } = {}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 3v11M7.5 10l4.5 4.5L16.5 10M5 20h14" />
+    </svg>
+  );
+}
+
+export function TrashIcon({ size = 20 } = {}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 7h16M9.5 7V4.8h5V7M6.5 7l1 13.2h9l1-13.2M10 11v6M14 11v6" />
+    </svg>
+  );
+}
+
+export function PlayIcon({ size = 20 } = {}) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor">
+      <path d="M8 5.2v13.6L19 12z" />
+    </svg>
+  );
+}
+
+export function CheckIcon({ size = 20 } = {}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M5 12.5l4.5 4.5L19 7" />
+    </svg>
+  );
+}

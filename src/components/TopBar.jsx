@@ -5,8 +5,10 @@ const LED = { live: "led-live", rec: "led-rec", idle: "led-idle" };
 
 export default function TopBar({
   mode = "idle",
-  statusText,
-  notice,
+  modelLabel,
+  modelTitle,
+  deviceLabel,
+  deviceTitle,
   onOpenAbout,
   onOpenSettings,
 }) {
@@ -17,18 +19,27 @@ export default function TopBar({
         <span className="brandName">{APP_NAME}</span>
       </div>
       <div className="topActions">
-        {notice && (
+        {modelLabel && (
           <button
-            className="chipWarn"
+            className="chip model"
             onClick={onOpenSettings}
-            title={notice}
-            aria-label={notice}
+            title={modelTitle || undefined}
+            aria-label={`Model: ${modelLabel}`}
           >
-            <span className="chipDot" />
-            CPU
+            <span className="chipText">{modelLabel}</span>
           </button>
         )}
-        <span className="pill">{statusText}</span>
+        {deviceLabel && (
+          <button
+            className={"chip " + (deviceLabel === "GPU" ? "gpu" : "cpu")}
+            onClick={onOpenSettings}
+            title={deviceTitle || undefined}
+            aria-label={`Running on ${deviceLabel}`}
+          >
+            <span className="chipDot" />
+            {deviceLabel}
+          </button>
+        )}
         <button className="iconBtn" onClick={onOpenAbout} aria-label="About">
           <InfoIcon />
         </button>

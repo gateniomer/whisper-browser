@@ -11,7 +11,7 @@ export default function Dock({
   disabled,
   onToggle,
 }) {
-  // Map RMS (~0–0.3) to a 0–1 visual level.
+  // Map RMS (~0–0.3) to a 0–1 visual level, with a visible idle baseline.
   const visual = Math.min(1, level * 7);
 
   return (
@@ -21,7 +21,7 @@ export default function Dock({
           <span
             key={i}
             style={{
-              height: `${Math.round((0.16 + visual * shape * 0.84) * 100)}%`,
+              height: `${Math.round((0.32 + visual * shape * 0.68) * 100)}%`,
             }}
           />
         ))}
