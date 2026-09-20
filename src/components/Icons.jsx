@@ -32,6 +32,24 @@ export function CloseIcon({ size = 20 } = {}) {
   );
 }
 
+export function InfoIcon({ size = 20 } = {}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5M12 7.6v.2" />
+    </svg>
+  );
+}
+
 export function MicIcon({ size = 28 } = {}) {
   return (
     <svg

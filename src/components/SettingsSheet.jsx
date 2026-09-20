@@ -1,4 +1,6 @@
 import { CloseIcon } from "./Icons.jsx";
+import Backdrop from "./Backdrop.jsx";
+import Field from "./Field.jsx";
 import ModelManager from "./ModelManager.jsx";
 import { LANGUAGES } from "../lib/constants.js";
 
@@ -17,10 +19,7 @@ export default function SettingsSheet({
 }) {
   return (
     <>
-      <div
-        className={"sheetBackdrop" + (open ? " show" : "")}
-        onClick={onClose}
-      />
+      <Backdrop open={open} onClick={onClose} />
       <section className={"sheet" + (open ? " open" : "")} aria-hidden={!open}>
         <div className="sheetHandle" />
         <div className="sheetHead">
@@ -30,8 +29,9 @@ export default function SettingsSheet({
           </button>
         </div>
 
-        <div className="field">
-          <label>Language{englishOnly ? " (model is English-only)" : ""}</label>
+        <Field
+          label={`Language${englishOnly ? " (model is English-only)" : ""}`}
+        >
           <select
             value={language}
             onChange={(e) => onLanguageChange(e.target.value)}
@@ -43,10 +43,9 @@ export default function SettingsSheet({
               </option>
             ))}
           </select>
-        </div>
+        </Field>
 
-        <div className="field">
-          <label>Device</label>
+        <Field label="Device" hint={notice}>
           <select
             value={device}
             onChange={(e) => onDeviceChange(e.target.value)}
@@ -57,8 +56,7 @@ export default function SettingsSheet({
             </option>
             <option value="wasm">WASM (CPU)</option>
           </select>
-          {notice && <p className="hint">{notice}</p>}
-        </div>
+        </Field>
 
         <ModelManager {...manager} />
       </section>

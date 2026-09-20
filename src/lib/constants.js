@@ -1,3 +1,6 @@
+export const APP_NAME = "Scribe";
+export const REPO_URL = "https://github.com/gateniomer/whisper-browser";
+
 export const LANGUAGES = [
   { id: "en", label: "English" },
   { id: "auto", label: "Auto-detect" },

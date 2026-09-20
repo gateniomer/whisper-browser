@@ -1,5 +1,5 @@
 /**
- * Whisper in the Browser — app shell.
+ * Scribe — app shell.
  *
  * This file only wires things together. The heavier logic lives in:
  *   - hooks/useEngine       engine selection + messaging + model/cache state
@@ -12,6 +12,7 @@ import TopBar from "./components/TopBar.jsx";
 import Stage from "./components/Stage.jsx";
 import Dock from "./components/Dock.jsx";
 import SettingsSheet from "./components/SettingsSheet.jsx";
+import AboutDialog from "./components/AboutDialog.jsx";
 import Splash from "./components/Splash.jsx";
 import { useEngine } from "./hooks/useEngine.js";
 import { useLiveCapture } from "./hooks/useLiveCapture.js";
@@ -36,6 +37,7 @@ export default function App() {
   const [starting, setStarting] = useState(false);
   const [booted, setBooted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const deviceTouchedRef = useRef(false);
   const endRef = useRef(null);
@@ -206,6 +208,7 @@ export default function App() {
         mode={live.liveActive ? "live" : "idle"}
         statusText={statusText}
         notice={engine.notice}
+        onOpenAbout={() => setAboutOpen(true)}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
@@ -259,6 +262,8 @@ export default function App() {
           onUse: setModel,
         }}
       />
+
+      <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
     </div>
   );
 }

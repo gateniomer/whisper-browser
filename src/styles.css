@@ -220,6 +220,68 @@ select {
   color: var(--muted);
 }
 
+/* ------------------------------------------------------------------- modal */
+
+.modal {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 50;
+  width: min(92vw, 420px);
+  padding: 20px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -46%);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
+  background: #14171f;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+}
+
+.modal.open {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s;
+}
+
+.modalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.modalHead h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.modal p {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: #c3c9d6;
+}
+
+.modal p:last-child {
+  margin-bottom: 0;
+}
+
+.link {
+  display: inline-block;
+  margin-top: 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
 .iconBtn {
   display: grid;
   place-items: center;
@@ -276,12 +338,6 @@ select {
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.32);
   color: #fca5a5;
-}
-
-.banner.notice {
-  background: rgba(234, 179, 8, 0.08);
-  border: 1px solid rgba(234, 179, 8, 0.28);
-  color: #e6d488;
 }
 
 /* ------------------------------------------------------------------- empty */
@@ -463,7 +519,7 @@ select {
 
 /* ------------------------------------------------------------------- sheet */
 
-.sheetBackdrop {
+.backdrop {
   position: fixed;
   inset: 0;
   z-index: 30;
@@ -473,7 +529,7 @@ select {
   transition: opacity 0.22s ease;
 }
 
-.sheetBackdrop.show {
+.backdrop.show {
   opacity: 1;
   pointer-events: auto;
 }
