@@ -4,11 +4,16 @@ import { createEngine } from "./engine.js";
 import { requiredFiles, sizeLabel } from "./models.js";
 
 const MODELS = [
-  { id: "onnx-community/whisper-base", label: "Whisper Base" },
-  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny" },
-  { id: "onnx-community/whisper-small", label: "Whisper Small" },
-  { id: "onnx-community/whisper-large-v3-turbo", label: "Whisper Large v3 Turbo" },
+  { id: "onnx-community/whisper-tiny", label: "Whisper Tiny — 39M" },
+  { id: "onnx-community/whisper-base", label: "Whisper Base — 74M" },
+  { id: "onnx-community/whisper-small", label: "Whisper Small — 244M" },
+  {
+    id: "onnx-community/whisper-large-v3-turbo",
+    label: "Whisper Large v3 Turbo — 809M",
+  },
 ];
+
+const DEFAULT_MODEL = "onnx-community/whisper-base";
 
 const LANGUAGES = [
   { id: "en", label: "English" },
@@ -49,12 +54,13 @@ export default function App() {
   const vadActiveRef = useRef(false);
   const loadWaitersRef = useRef([]);
   const loadedKeyRef = useRef(null);
+  const endRef = useRef(null);
 
   const [status, setStatus] = useState("idle"); // idle | loading | transcribing
   const [progress, setProgress] = useState(null);
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [model, setModel] = useState(MODELS[0].id);
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [language, setLanguage] = useState("en");
   const [device, setDevice] = useState("webgpu");
   const [result, setResult] = useState(null);
@@ -69,6 +75,7 @@ export default function App() {
   const [cacheUrls, setCacheUrls] = useState([]);
   const [downloading, setDownloading] = useState(null);
   const [engineReady, setEngineReady] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const deviceTouchedRef = useRef(false);
 
@@ -218,6 +225,11 @@ export default function App() {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
     return () => clearInterval(t);
   }, [recording]);
+
+  // Keep the newest live line in view.
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [segments, liveActive]);
 
   // Tear down the live capture graph on unmount.
   useEffect(() => {
@@ -504,34 +516,212 @@ export default function App() {
 
   const busy = status === "loading" || status === "transcribing";
   const pct =
-    progress && typeof progress.progress === "number"
-      ? Math.round(progress.progress)
-      : null;
+    progress && typeof progress.overall === "number"
+      ? Math.round(progress.overall)
+      : progress && typeof progress.progress === "number"
+        ? Math.round(progress.progress)
+        : null;
   const locked = busy || recording || liveActive;
   const activeDownloaded = isModelDownloaded(model);
 
   const statusText = downloading
     ? `Downloading… ${pct ?? 0}%`
     : liveActive
-      ? "Listening…"
+      ? pending > 0
+        ? `Listening · ${pending} queued`
+        : "Listening…"
       : !activeDownloaded
         ? "Model not downloaded"
         : !modelReady
           ? "Loading model…"
           : statusLabel(status);
 
+  const showLive = liveActive || segments.length > 0;
+  const showFinal = !showLive && result;
+  const showEmpty = !showLive && !showFinal;
+
   return (
     <div className="app">
-      <h1>Whisper in the Browser</h1>
-      <p className="sub">
-        Download, manage, and run speech recognition locally. Audio never leaves
-        your machine.
-      </p>
+      <header className="topbar">
+        <div className="brand">
+          <span
+            className={
+              "led " +
+              (liveActive ? "led-live" : recording ? "led-rec" : "led-idle")
+            }
+          />
+          <span className="brandName">Whisper</span>
+        </div>
+        <div className="topActions">
+          <span className="pill">{statusText}</span>
+          <button
+            className="iconBtn"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="Settings"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+              stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <path d="M4 7h9M19 7h1M4 17h1M11 17h9" />
+              <circle cx="16" cy="7" r="2.2" />
+              <circle cx="8" cy="17" r="2.2" />
+            </svg>
+          </button>
+        </div>
+      </header>
 
-      <div className="manager">
+      {(downloading || status === "loading") && (
+        <div className="loadbar">
+          <div style={{ width: `${pct ?? 0}%` }} />
+        </div>
+      )}
+
+      <main className="stage">
+        {error && <div className="banner error">{error}</div>}
+        {notice && <div className="banner notice">{notice}</div>}
+
+        {showEmpty && (
+          <div className="empty">
+            <div className="emptyIcon">🎙️</div>
+            <h2>
+              {activeDownloaded ? "Ready when you are" : "No model loaded"}
+            </h2>
+            <p>
+              {activeDownloaded
+                ? "Tap Go live for real-time captions, or Record to transcribe a clip."
+                : "Download a model to get started — it runs entirely in your browser."}
+            </p>
+            {!activeDownloaded && (
+              <button
+                className="primary"
+                onClick={() => setSettingsOpen(true)}
+              >
+                Choose a model
+              </button>
+            )}
+          </div>
+        )}
+
+        {showLive && (
+          <ul className="lines">
+            {segments.length === 0 && (
+              <li className="line muted">Listening… start speaking.</li>
+            )}
+            {segments.map((s) => (
+              <li className="line" key={s.id}>
+                <time>{fmt(s.offset)}</time>
+                <span>{s.text}</span>
+              </li>
+            ))}
+            <li ref={endRef} />
+          </ul>
+        )}
+
+        {showFinal && (
+          <article className="final">
+            <div className="finalHead">
+              <h2>Transcript</h2>
+              <button
+                className="ghost"
+                onClick={() => navigator.clipboard.writeText(result.text || "")}
+              >
+                Copy
+              </button>
+            </div>
+            <p className="finalText">
+              {result.text?.trim() || "(no speech detected)"}
+            </p>
+            {result.chunks?.length > 1 && (
+              <ul className="lines small">
+                {result.chunks.map((c, i) => (
+                  <li className="line" key={i}>
+                    <time>{fmt(c.timestamp?.[0])}</time>
+                    <span>{c.text}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </article>
+        )}
+      </main>
+
+      <footer className="dock">
+        <button
+          className={recording ? "btn stop" : "btn"}
+          onClick={recording ? stopRecording : startRecording}
+          disabled={busy || liveActive || !modelReady}
+        >
+          <span className="btnIcon">{recording ? "■" : "●"}</span>
+          {recording ? `Stop · ${elapsed}s` : "Record"}
+        </button>
+
+        <button
+          className={liveActive ? "btn stop" : "btn primary"}
+          onClick={liveActive ? stopLive : startLive}
+          disabled={!liveActive && (busy || recording || !modelReady)}
+        >
+          <span className="btnIcon">{liveActive ? "■" : "◉"}</span>
+          {liveActive ? "Stop live" : "Go live"}
+        </button>
+      </footer>
+
+      <div
+        className={"sheetBackdrop" + (settingsOpen ? " show" : "")}
+        onClick={() => setSettingsOpen(false)}
+      />
+      <section
+        className={"sheet" + (settingsOpen ? " open" : "")}
+        aria-hidden={!settingsOpen}
+      >
+        <div className="sheetHandle" />
+        <div className="sheetHead">
+          <h2>Settings</h2>
+          <button
+            className="iconBtn"
+            onClick={() => setSettingsOpen(false)}
+            aria-label="Close"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+              stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="field">
+          <label>Language</label>
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            disabled={locked}
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>Device</label>
+          <select
+            value={device}
+            onChange={(e) => {
+              deviceTouchedRef.current = true;
+              setDevice(e.target.value);
+            }}
+            disabled={locked}
+          >
+            <option value="webgpu">
+              WebGPU (GPU){gpuStatus === "ready" ? "" : " — may be unavailable"}
+            </option>
+            <option value="wasm">WASM (CPU)</option>
+          </select>
+        </div>
+
         <div className="managerHead">
-          <h2>Models</h2>
-          <span className="status">Stored in your browser</span>
+          <h3>Models</h3>
+          <span className="muted small">Stored in your browser</span>
         </div>
         <ul className="modelList">
           {MODELS.map((m) => {
@@ -542,7 +732,9 @@ export default function App() {
               <li key={m.id} className={isActive ? "model active" : "model"}>
                 <div className="modelInfo">
                   <span className="modelName">{m.label}</span>
-                  <span className="modelMeta">{sizeLabel(m.id, device)}</span>
+                  <span className="modelMeta">
+                    {sizeLabel(m.id, device)}
+                  </span>
                 </div>
                 <div className="modelActions">
                   <span className={downloaded ? "badge ok" : "badge"}>
@@ -582,138 +774,7 @@ export default function App() {
             );
           })}
         </ul>
-      </div>
-
-      <div className="controls">
-        <label>
-          Language
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            disabled={locked}
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.id} value={l.id}>
-                {l.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          Device
-          <select
-            value={device}
-            onChange={(e) => {
-              deviceTouchedRef.current = true;
-              setDevice(e.target.value);
-            }}
-            disabled={locked}
-          >
-            <option value="webgpu">
-              WebGPU (GPU){gpuStatus === "ready" ? "" : " — may be unavailable"}
-            </option>
-            <option value="wasm">WASM (CPU)</option>
-          </select>
-        </label>
-      </div>
-
-      <div className="recordRow">
-        <button
-          className={recording ? "rec stop" : "rec"}
-          onClick={recording ? stopRecording : startRecording}
-          disabled={busy || liveActive || !modelReady}
-        >
-          {recording ? `Stop (${elapsed}s)` : "Record"}
-        </button>
-
-        <button
-          className={liveActive ? "rec stop" : "rec live"}
-          onClick={liveActive ? stopLive : startLive}
-          disabled={!liveActive && (busy || recording || !modelReady)}
-        >
-          {liveActive ? "Stop live" : "Start live"}
-        </button>
-
-        <span className="status">{statusText}</span>
-      </div>
-
-      {(downloading || status === "loading") && (
-        <div className="progress">
-          <div className="bar">
-            <div style={{ width: `${pct ?? 0}%` }} />
-          </div>
-          <span>
-            {progress?.file || progress?.name || "Loading"}
-            {pct != null ? ` — ${pct}%` : ""}
-          </span>
-        </div>
-      )}
-
-      {notice && <p className="notice">{notice}</p>}
-      {error && <p className="error">{error}</p>}
-
-      {result && (
-        <div className="result">
-          <div className="resultHead">
-            <h2>Transcript</h2>
-            <button
-              className="ghost"
-              onClick={() => navigator.clipboard.writeText(result.text || "")}
-            >
-              Copy
-            </button>
-          </div>
-          <p className="text">{result.text?.trim() || "(no speech detected)"}</p>
-
-          {result.chunks?.length > 1 && (
-            <ul className="chunks">
-              {result.chunks.map((c, i) => (
-                <li key={i}>
-                  <time>{fmt(c.timestamp?.[0])}</time>
-                  <span>{c.text}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {(liveActive || segments.length > 0) && (
-        <div className="result">
-          <div className="resultHead">
-            <h2>Live transcript</h2>
-            <div className="headActions">
-              {pending > 0 && <span className="status">{pending} queued…</span>}
-              <button
-                className="ghost"
-                onClick={() =>
-                  navigator.clipboard.writeText(
-                    segments.map((s) => `[${fmt(s.offset)}] ${s.text}`).join("\n"),
-                  )
-                }
-              >
-                Copy
-              </button>
-            </div>
-          </div>
-
-          {segments.length === 0 ? (
-            <p className="text dim">
-              {liveActive ? "Listening… start speaking." : "No speech captured."}
-            </p>
-          ) : (
-            <ul className="chunks live">
-              {segments.map((s) => (
-                <li key={s.id}>
-                  <time>{fmt(s.offset)}</time>
-                  <span>{s.text}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+      </section>
     </div>
   );
 }

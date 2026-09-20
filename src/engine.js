@@ -1,5 +1,5 @@
 import { pipeline, env } from "@huggingface/transformers";
-import { dtypesFor } from "./models.js";
+import { dtypesFor, requiredFiles } from "./models.js";
 
 // Never look for models beside the app; always pull from the HF Hub.
 env.allowLocalModels = false;
@@ -123,11 +123,68 @@ export function createEngine(post) {
     return run;
   }
 
-  function createPipeline({ model, device }) {
+  // Progress arrives per file, so a single file's percentage jumps 0→100 over
+  // and over. Aggregate bytes across every file, and use the model's real file
+  // sizes (from the HF API) as the denominator so the bar only moves forward.
+  const CONFIG_FILES = new Set([
+    "config.json",
+    "preprocessor_config.json",
+    "generation_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "added_tokens.json",
+    "vocab.json",
+    "merges.txt",
+    "normalizer.json",
+  ]);
+
+  let progFiles = new Map();
+  let progExpected = 0;
+
+  async function expectedBytes({ model, device }) {
+    try {
+      const res = await fetch(`https://huggingface.co/api/models/${model}?blobs=true`);
+      if (!res.ok) return 0;
+      const info = await res.json();
+      const wanted = new Set(requiredFiles(model, device));
+      let total = 0;
+      for (const s of info.siblings || []) {
+        const base = String(s.rfilename || "").replace(/^onnx\//, "");
+        if (wanted.has(base) || CONFIG_FILES.has(base)) total += s.size || 0;
+      }
+      return total;
+    } catch {
+      return 0;
+    }
+  }
+
+  function onProgress(p) {
+    if (p.file) {
+      const e = progFiles.get(p.file) || { loaded: 0, total: 0 };
+      if (typeof p.loaded === "number") e.loaded = p.loaded;
+      if (typeof p.total === "number" && p.total) e.total = p.total;
+      if (p.status === "done" && e.total) e.loaded = e.total;
+      progFiles.set(p.file, e);
+    }
+    let loaded = 0;
+    let total = 0;
+    for (const e of progFiles.values()) {
+      loaded += e.loaded;
+      total += e.total;
+    }
+    const denom = Math.max(progExpected, total);
+    const overall = denom > 0 ? Math.min(100, (loaded / denom) * 100) : null;
+    post({ type: "progress", data: { ...p, overall } });
+  }
+
+  async function createPipeline({ model, device }) {
+    progFiles = new Map();
+    progExpected = await expectedBytes({ model, device });
     return pipeline("automatic-speech-recognition", model, {
       device,
       dtype: dtypesFor(model, device),
-      progress_callback: (p) => post({ type: "progress", data: p }),
+      progress_callback: onProgress,
     });
   }
 
