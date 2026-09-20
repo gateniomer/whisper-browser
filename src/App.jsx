@@ -771,9 +771,19 @@ async function probeWebGPU() {
     try {
       const adapter = await withTimeout(
         navigator.gpu.requestAdapter({ powerPreference: "high-performance" }),
-        2000,
+        3000,
       );
-      if (adapter) return "ready";
+      if (adapter) {
+        // Some browsers/drivers hand out an adapter but fail when a device is
+        // actually created, which is the step ONNX Runtime needs.
+        try {
+          const device = await withTimeout(adapter.requestDevice(), 3000);
+          device.destroy?.();
+          return "ready";
+        } catch {
+          /* fall through and retry */
+        }
+      }
     } catch {
       // Some builds reject instead of resolving null; treat as "not yet".
     }

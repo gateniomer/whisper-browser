@@ -91,6 +91,18 @@ export function webgpuInThisContext() {
   return typeof navigator !== "undefined" && "gpu" in navigator;
 }
 
+// Presence of navigator.gpu isn't enough — verify an adapter is actually
+// grantable in this context (worker vs main thread can differ).
+export async function webgpuUsableHere() {
+  if (!webgpuInThisContext()) return false;
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    return !!adapter;
+  } catch {
+    return false;
+  }
+}
+
 function isSecureContextHere() {
   if (typeof self !== "undefined" && "isSecureContext" in self) {
     return self.isSecureContext;
@@ -124,29 +136,67 @@ export function createEngine(post) {
     });
   }
 
+  // Acquire one adapter and hand it to ONNX Runtime, so ORT never makes its
+  // own request (which is what fails with "Failed to get GPU adapter" when the
+  // browser exposes navigator.gpu but can't actually grant an adapter).
+  let sharedAdapter = null;
+  async function acquireAdapter() {
+    if (sharedAdapter) return sharedAdapter;
+    try {
+      if (typeof navigator === "undefined" || !("gpu" in navigator)) return null;
+      const adapter = await navigator.gpu.requestAdapter({
+        powerPreference: "high-performance",
+      });
+      if (!adapter) return null;
+      try {
+        env.backends.onnx.webgpu.adapter = adapter;
+      } catch {
+        /* not exposed in every ORT version */
+      }
+      sharedAdapter = adapter;
+      return adapter;
+    } catch {
+      return null;
+    }
+  }
+
+  function fallbackNotice() {
+    return isSecureContextHere()
+      ? "WebGPU couldn't be initialized in this browser — using CPU (WASM). It works, just slower."
+      : "WebGPU requires an HTTPS (secure) origin — using CPU (WASM).";
+  }
+
+  // Build a pipeline, falling back from WebGPU to WASM if the GPU backend is
+  // actually unusable. Returns the effective device for cache-key purposes.
+  async function buildPipeline({ model, device }) {
+    if (device === "webgpu") {
+      const adapter = await acquireAdapter();
+      if (!adapter) {
+        post({ type: "notice", data: fallbackNotice() });
+        return { pipe: await createPipeline({ model, device: "wasm" }), device: "wasm" };
+      }
+      try {
+        return {
+          pipe: await createPipeline({ model, device: "webgpu" }),
+          device: "webgpu",
+        };
+      } catch {
+        post({ type: "notice", data: fallbackNotice() });
+        return { pipe: await createPipeline({ model, device: "wasm" }), device: "wasm" };
+      }
+    }
+    return { pipe: await createPipeline({ model, device }), device };
+  }
+
   async function getTranscriber({ model, device }) {
     const key = `${model}|${device}`;
     if (transcriber && loadedKey === key) return transcriber;
 
     post({ type: "status", data: "loading" });
 
-    try {
-      transcriber = await createPipeline({ model, device });
-      loadedKey = key;
-    } catch (err) {
-      if (device === "webgpu") {
-        post({
-          type: "notice",
-          data: isSecureContextHere()
-            ? "WebGPU failed to initialize — falling back to CPU (WASM)."
-            : "WebGPU requires an HTTPS (secure) origin — falling back to CPU (WASM).",
-        });
-        transcriber = await createPipeline({ model, device: "wasm" });
-        loadedKey = `${model}|wasm`;
-      } else {
-        throw err;
-      }
-    }
+    const { pipe, device: effective } = await buildPipeline({ model, device });
+    transcriber = pipe;
+    loadedKey = `${model}|${effective}`;
 
     post({ type: "status", data: "idle" });
     return transcriber;
@@ -198,7 +248,7 @@ export function createEngine(post) {
     if (msg.type === "caps") {
       post({
         type: "caps",
-        webgpu: webgpuInThisContext(),
+        webgpu: await webgpuUsableHere(),
         secure: isSecureContextHere(),
       });
       return;
@@ -223,12 +273,12 @@ export function createEngine(post) {
       enqueue(async () => {
         try {
           post({ type: "status", data: "loading" });
-          const p = await createPipeline({
+          const { pipe } = await buildPipeline({
             model: msg.model,
             device: msg.device,
           });
           try {
-            p.dispose?.();
+            pipe.dispose?.();
           } catch {
             /* ignore */
           }
