@@ -1,14 +1,20 @@
-import { isModelDownloaded, sizeLabel } from "../lib/models.js";
+import {
+  isModelDownloaded,
+  requiresWebGPU,
+  sizeLabel,
+} from "../lib/models.js";
 
 export default function ModelManager({
   models,
   device,
   activeModel,
   cacheUrls,
+  parakeetCached,
   downloading,
   pct,
   locked,
   liveActive,
+  gpuReady,
   onDownload,
   onDelete,
   onUse,
@@ -21,9 +27,15 @@ export default function ModelManager({
       </div>
       <ul className="modelList">
         {models.map((m) => {
-          const downloaded = isModelDownloaded(m.id, device, cacheUrls);
+          const downloaded = isModelDownloaded(
+            m.id,
+            device,
+            cacheUrls,
+            parakeetCached,
+          );
           const isActive = m.id === activeModel;
           const isDownloading = downloading === m.id;
+          const blockedGPU = requiresWebGPU(m.id) && !gpuReady;
           return (
             <li key={m.id} className={isActive ? "model active" : "model"}>
               <div className="modelInfo">
@@ -32,17 +44,20 @@ export default function ModelManager({
               </div>
               <div className="modelActions">
                 <span className={downloaded ? "badge ok" : "badge"}>
-                  {isDownloading
-                    ? `Downloading ${pct ?? 0}%`
-                    : downloaded
-                      ? "Downloaded"
-                      : "Not downloaded"}
+                  {blockedGPU
+                    ? "Needs WebGPU"
+                    : isDownloading
+                      ? `Downloading ${pct ?? 0}%`
+                      : downloaded
+                        ? "Downloaded"
+                        : "Not downloaded"}
                 </span>
                 {!downloaded && (
                   <button
                     className="ghost"
                     onClick={() => onDownload(m.id)}
-                    disabled={!!downloading}
+                    disabled={!!downloading || blockedGPU}
+                    title={blockedGPU ? "Requires WebGPU" : undefined}
                   >
                     Download
                   </button>
@@ -59,7 +74,10 @@ export default function ModelManager({
                 <button
                   className="ghost"
                   onClick={() => onUse(m.id)}
-                  disabled={isActive || !downloaded || locked}
+                  disabled={
+                    isActive || !downloaded || locked || blockedGPU
+                  }
+                  title={blockedGPU ? "Requires WebGPU" : undefined}
                 >
                   {isActive ? "Active" : "Use"}
                 </button>

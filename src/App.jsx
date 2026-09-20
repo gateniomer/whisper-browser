@@ -14,6 +14,7 @@ import Dock from "./components/Dock.jsx";
 import SettingsSheet from "./components/SettingsSheet.jsx";
 import AboutDialog from "./components/AboutDialog.jsx";
 import Splash from "./components/Splash.jsx";
+import StatusStrip from "./components/StatusStrip.jsx";
 import { useEngine } from "./hooks/useEngine.js";
 import { useLiveCapture } from "./hooks/useLiveCapture.js";
 import {
@@ -61,7 +62,12 @@ export default function App() {
     setDevice(engine.suggestDevice);
   }, [engine.suggestDevice]);
 
-  const activeDownloaded = isModelDownloaded(model, device, engine.cacheUrls);
+  const activeDownloaded = isModelDownloaded(
+    model,
+    device,
+    engine.cacheUrls,
+    engine.parakeetCached,
+  );
 
   // English-only models ignore the language picker; Whisper-family English
   // models are pinned to "en", Moonshine takes no language option at all.
@@ -152,6 +158,34 @@ export default function App() {
   const locked = busy || live.liveActive || starting;
   const showEmpty = !live.liveActive && !starting && segments.length === 0;
 
+  // What the stage's central card should say when there's no transcript yet.
+  const downloadingLabel = engine.downloading
+    ? (MODELS.find((m) => m.id === engine.downloading)?.label ??
+      engine.downloading)
+    : null;
+  let stageState;
+  if (engine.downloading) {
+    stageState = { kind: "downloading", label: downloadingLabel, pct };
+  } else if (
+    !engine.error &&
+    (engine.status === "loading" || (activeDownloaded && !modelReady))
+  ) {
+    stageState = { kind: "loading" };
+  } else if (!activeDownloaded) {
+    stageState = { kind: "no-model" };
+  } else {
+    stageState = { kind: "ready" };
+  }
+
+  // Transient status shown under the header, even mid-transcript.
+  const stripState = engine.downloading
+    ? { kind: "downloading", label: downloadingLabel, pct }
+    : engine.status === "loading"
+      ? { kind: "loading" }
+      : pending > 0
+        ? { kind: "transcribing" }
+        : null;
+
   const statusText = engine.downloading
     ? `Downloading… ${pct ?? 0}%`
     : starting
@@ -212,16 +246,12 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      {(engine.downloading || engine.status === "loading") && (
-        <div className="loadbar">
-          <div style={{ width: `${pct ?? 0}%` }} />
-        </div>
-      )}
+      <StatusStrip state={stripState} />
 
       <Stage
         error={engine.error}
         showEmpty={showEmpty}
-        activeDownloaded={activeDownloaded}
+        state={stageState}
         onChooseModel={() => setSettingsOpen(true)}
         liveActive={live.liveActive}
         segments={segments}
@@ -253,10 +283,12 @@ export default function App() {
           device,
           activeModel: model,
           cacheUrls: engine.cacheUrls,
+          parakeetCached: engine.parakeetCached,
           downloading: engine.downloading,
           pct,
           locked,
           liveActive: live.liveActive,
+          gpuReady: engine.gpuStatus === "ready",
           onDownload: (id) => engine.downloadModel({ model: id, device }),
           onDelete: engine.deleteModel,
           onUse: setModel,

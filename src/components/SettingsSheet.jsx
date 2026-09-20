@@ -20,7 +20,11 @@ export default function SettingsSheet({
   return (
     <>
       <Backdrop open={open} onClick={onClose} />
-      <section className={"sheet" + (open ? " open" : "")} aria-hidden={!open}>
+      <section
+        className={"sheet" + (open ? " open" : "")}
+        aria-hidden={!open}
+        inert={!open}
+      >
         <div className="sheetHandle" />
         <div className="sheetHead">
           <h2>Settings</h2>

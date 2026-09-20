@@ -26,24 +26,36 @@ models run locally with WebGPU (or CPU/WASM) and work offline once downloaded.
 Sizes are approximate download sizes for the two ONNX files, which differ by
 backend (WebGPU uses higher precision; CPU uses 8-bit).
 
-| Model | Params | WebGPU | CPU (WASM) | Notes |
-| --- | ---: | ---: | ---: | --- |
-| Whisper Tiny | 39M | ~151 MB | ~41 MB | multilingual, fastest Whisper |
-| Whisper Base | 74M | ~291 MB | ~77 MB | multilingual, default |
-| Whisper Small | 244M | ~968 MB | ~249 MB | multilingual, more accurate |
-| Whisper Large v3 Turbo | 809M | — | ~1.1 GB | multilingual; runs on CPU |
-| Moonshine Tiny | 27M | ~109 MB | ~28 MB | English, built for real-time |
-| Moonshine Base | 61M | ~247 MB | ~63 MB | English, real-time |
-| Distil-Whisper Large v3.5 | 756M | — | ~1.0 GB | English; ~6x faster than large-v3 |
+| Model | Params | Size | Notes |
+| --- | ---: | ---: | --- |
+| Whisper Tiny | 39M | ~41 MB | multilingual, fastest Whisper (GPU/CPU) |
+| Whisper Base | 74M | ~77 MB | multilingual, default (GPU/CPU) |
+| Whisper Small | 244M | ~249 MB | multilingual, more accurate (GPU/CPU) |
+| Whisper Large v3 Turbo | 809M | ~1.1 GB | multilingual; runs on CPU |
+| Moonshine Tiny | 27M | ~28 MB | English, built for real-time (GPU/CPU) |
+| Moonshine Base | 61M | ~63 MB | English, real-time (GPU/CPU) |
+| Distil-Whisper Large v3.5 | 756M | ~1.0 GB | English; ~6x faster than large-v3; runs on CPU |
+| Cohere Transcribe | 2B | ~2.1 GB | 14 languages, best-in-class accuracy; **requires WebGPU** |
+| Parakeet TDT 0.6B v2 | 600M | ~0.7 GB | English, top accuracy (experimental) |
+| Parakeet TDT 0.6B v3 | 600M | ~0.7 GB | 25 European languages (experimental) |
 
 Whisper and Distil-Whisper are multilingual/English batch models driven in a
 low-latency streaming fashion (voice-activity segmentation). Moonshine is
 designed for live transcription and feels the most responsive.
 
-GPU sizes are `fp32`; CPU sizes are 8-bit (`q8`). Large models (Whisper
-Large/Turbo, Distil-Large) run on the CPU: their fp32 encoder is external data
+GPU sizes are `fp32` (Cohere uses `q4`); CPU sizes are 8-bit (`q8`). Large
+Whisper-family models run on the CPU: their fp32 encoder is external data
 (~2.5 GB, too big for the browser) and their 4-bit WebGPU kernels are unreliable
-for Whisper, so Scribe uses the accurate q8 CPU weights instead.
+for Whisper, so Scribe uses the accurate q8 CPU weights instead. Cohere
+Transcribe runs only on **WebGPU** (its quantized embeddings use the
+`GatherBlockQuantized` op, which the CPU/WASM provider doesn't implement).
+
+**Engine architecture.** Models are hosted behind pluggable engines
+(`src/lib/engines/`): Transformers.js (Whisper/Moonshine/Cohere) and parakeet.js
+(Parakeet). The router in `src/lib/engine.js` picks one per model family, so
+adding a runtime doesn't touch the app. Parakeet is experimental; it caches in
+IndexedDB, which Scribe reads directly (`engines/parakeetCache.js`) so per-model
+Downloaded/Delete work without touching other models.
 
 ## How it works
 
@@ -147,7 +159,10 @@ src/
     useLiveCapture.js  Microphone capture + VAD segmentation
   lib/
     models.js          Model catalog + dtype/file rules
-    engine.js          Inference engine (cache, pipeline, message routing)
+    engine.js          Engine router (picks a backend per model family)
+    engines/
+      transformers.js  Whisper / Moonshine / Cohere (Transformers.js)
+      parakeet.js      NVIDIA Parakeet (parakeet.js)
     webgpu.js          WebGPU capability probing
     format.js          Small formatting helpers
     constants.js       App name, repo URL, languages, VAD tuning
@@ -185,6 +200,9 @@ src/
   WebGPU kernels are unreliable). Use a smaller model if you need speed. If a
   partial download is left over, delete the model in Settings and download
   again.
+- **Cohere Transcribe won't load** — it requires WebGPU and is shown as
+  "Needs WebGPU" when the browser has none (its quantized embeddings use an op
+  the CPU provider lacks). Use Chrome/Edge, or pick another model.
 - **Slow on CPU** — choose a smaller model (Moonshine Tiny or Whisper Tiny).
   Serving with COOP/COEP headers enables multi-threaded WASM.
 

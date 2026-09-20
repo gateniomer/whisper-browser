@@ -9,6 +9,7 @@ export default function AboutDialog({ open, onClose }) {
       <section
         className={"modal" + (open ? " open" : "")}
         aria-hidden={!open}
+        inert={!open}
         role="dialog"
         aria-label={`About ${APP_NAME}`}
       >

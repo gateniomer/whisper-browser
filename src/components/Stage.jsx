@@ -1,9 +1,10 @@
 import { fmt } from "../lib/format.js";
+import StateCard from "./StateCard.jsx";
 
 export default function Stage({
   error,
   showEmpty,
-  activeDownloaded,
+  state,
   onChooseModel,
   liveActive,
   segments,
@@ -13,9 +14,7 @@ export default function Stage({
     <main className="stage">
       {error && <div className="banner error">{error}</div>}
 
-      {showEmpty && (
-        <EmptyState hasModel={activeDownloaded} onChoose={onChooseModel} />
-      )}
+      {showEmpty && <StateCard state={state} onChooseModel={onChooseModel} />}
 
       {!showEmpty && (
         <ul className="lines">
@@ -36,24 +35,5 @@ export default function Stage({
         </ul>
       )}
     </main>
-  );
-}
-
-function EmptyState({ hasModel, onChoose }) {
-  return (
-    <div className="empty">
-      <div className="emptyIcon">🎙️</div>
-      <h2>{hasModel ? "Ready when you are" : "No model loaded"}</h2>
-      <p>
-        {hasModel
-          ? "Tap the mic to start live, on-device captions."
-          : "Download a model to get started — it runs entirely in your browser."}
-      </p>
-      {!hasModel && (
-        <button className="primary" onClick={onChoose}>
-          Choose a model
-        </button>
-      )}
-    </div>
   );
 }

@@ -23,6 +23,7 @@ export function useEngine(callbacks = {}) {
   const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(null);
   const [cacheUrls, setCacheUrls] = useState([]);
+  const [parakeetCached, setParakeetCached] = useState([]);
   const [downloading, setDownloading] = useState(null);
   const [gpuStatus, setGpuStatus] = useState("checking");
   const [suggestDevice, setSuggestDevice] = useState(null);
@@ -63,6 +64,9 @@ export function useEngine(callbacks = {}) {
         }
         case "cache-list":
           setCacheUrls(Array.isArray(msg.data) ? msg.data : []);
+          break;
+        case "parakeet-cached":
+          setParakeetCached(Array.isArray(msg.data) ? msg.data : []);
           break;
         case "downloaded":
           setDownloading(null);
@@ -188,6 +192,7 @@ export function useEngine(callbacks = {}) {
     setStatus,
     progress,
     cacheUrls,
+    parakeetCached,
     downloading,
     gpuStatus,
     suggestDevice,

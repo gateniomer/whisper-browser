@@ -52,6 +52,25 @@ export const MODELS = [
     family: "whisper",
     englishOnly: true,
   },
+  {
+    id: "onnx-community/cohere-transcribe-03-2026-ONNX",
+    label: "Cohere Transcribe — 2B · 14 langs · large",
+    family: "cohere",
+    englishOnly: false,
+    requiresWebGPU: true,
+  },
+  {
+    id: "parakeet-tdt-0.6b-v2",
+    label: "Parakeet TDT 0.6B v2 — English",
+    family: "parakeet",
+    englishOnly: true,
+  },
+  {
+    id: "parakeet-tdt-0.6b-v3",
+    label: "Parakeet TDT 0.6B v3 — multilingual",
+    family: "parakeet",
+    englishOnly: false,
+  },
 ];
 
 const META = new Map(MODELS.map((m) => [m.id, m]));
@@ -62,6 +81,12 @@ export function modelFamily(modelId) {
 
 export function isEnglishOnly(modelId) {
   return META.get(modelId)?.englishOnly ?? false;
+}
+
+// Some models need GPU-only kernels (e.g. Cohere's quantized embeddings use
+// GatherBlockQuantized, which the CPU/WASM provider doesn't implement).
+export function requiresWebGPU(modelId) {
+  return META.get(modelId)?.requiresWebGPU ?? false;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +116,10 @@ export function resolveDevice(modelId, device) {
 }
 
 export function dtypesFor(modelId, device) {
-  return resolveDevice(modelId, device) === "webgpu" ? "fp32" : "q8";
+  const dev = resolveDevice(modelId, device);
+  // Cohere Transcribe has no small fp32 export; 4-bit on GPU, 8-bit on CPU.
+  if (modelFamily(modelId) === "cohere") return dev === "webgpu" ? "q4" : "q8";
+  return dev === "webgpu" ? "fp32" : "q8";
 }
 
 export function requiredFiles(modelId, device) {
@@ -114,6 +142,9 @@ const SIZES_MB = {
   "onnx-community/moonshine-tiny-ONNX": { webgpu: 109, wasm: 28 },
   "onnx-community/moonshine-base-ONNX": { webgpu: 247, wasm: 63 },
   "distil-whisper/distil-large-v3.5-ONNX": { webgpu: 726, wasm: 1030 },
+  "onnx-community/cohere-transcribe-03-2026-ONNX": { webgpu: 2125, wasm: 2293 },
+  "parakeet-tdt-0.6b-v2": { webgpu: 700, wasm: 700 },
+  "parakeet-tdt-0.6b-v3": { webgpu: 700, wasm: 700 },
 };
 
 export function sizeLabel(modelId, device) {
@@ -122,8 +153,18 @@ export function sizeLabel(modelId, device) {
   return mb >= 1000 ? `~${(mb / 1000).toFixed(1)} GB` : `~${mb} MB`;
 }
 
-// A model counts as downloaded when both required ONNX files are in the cache.
-export function isModelDownloaded(modelId, device, urls = []) {
+// A model counts as downloaded when its files are cached. Transformers-family
+// models live in our CacheStorage list; Parakeet models live in parakeet.js's
+// IndexedDB (reported separately as parakeet model ids).
+export function isModelDownloaded(
+  modelId,
+  device,
+  urls = [],
+  parakeetCached = [],
+) {
+  if (modelFamily(modelId) === "parakeet") {
+    return parakeetCached.includes(modelId);
+  }
   return requiredFiles(modelId, device).every((name) =>
     urls.some((u) => u.includes(`/${modelId}/`) && u.endsWith(name)),
   );
