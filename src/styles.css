@@ -583,6 +583,18 @@ label,
   animation: none;
 }
 
+/* Provisional (interim) live line — replaced when the segment commits. */
+.line.partial {
+  color: var(--muted);
+  background: transparent;
+  border-style: dashed;
+  animation: none;
+}
+
+.line.partial span {
+  font-style: italic;
+}
+
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }

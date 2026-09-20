@@ -55,6 +55,9 @@ export function useEngine(callbacks = {}) {
         case "segment":
           cbRef.current.onSegment?.(msg);
           break;
+        case "partial":
+          cbRef.current.onPartial?.(msg);
+          break;
         case "loaded": {
           loadedKeyRef.current = msg.key ?? null;
           const waiters = loadWaitersRef.current;

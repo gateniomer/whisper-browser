@@ -9,9 +9,9 @@ import { LIVE_TUNING } from "../lib/constants.js";
  * adaptive noise floor, hysteresis, pre-roll and trailing-silence trimming),
  * and calls `onSegment({ id, offset, audio, speechSec })` per utterance.
  */
-export function useLiveCapture({ onSegment, onError, onLevel } = {}) {
-  const cbRef = useRef({ onSegment, onError, onLevel });
-  cbRef.current = { onSegment, onError, onLevel };
+export function useLiveCapture({ onSegment, onError, onLevel, onPartial } = {}) {
+  const cbRef = useRef({ onSegment, onError, onLevel, onPartial });
+  cbRef.current = { onSegment, onError, onLevel, onPartial };
 
   const liveRef = useRef(null);
   const activeRef = useRef(false);
@@ -25,6 +25,8 @@ export function useLiveCapture({ onSegment, onError, onLevel } = {}) {
   const noiseFloorRef = useRef(0.005);
   const vadRef = useRef(false);
   const lastLevelAtRef = useRef(0);
+  const segmentStartRef = useRef(0);
+  const lastPartialAtRef = useRef(0);
 
   const [liveActive, setLiveActive] = useState(false);
 
@@ -38,6 +40,8 @@ export function useLiveCapture({ onSegment, onError, onLevel } = {}) {
     idRef.current = 0;
     noiseFloorRef.current = 0.005;
     vadRef.current = false;
+    segmentStartRef.current = 0;
+    lastPartialAtRef.current = 0;
   }
 
   function flushSegment(sampleRate) {
@@ -119,6 +123,8 @@ export function useLiveCapture({ onSegment, onError, onLevel } = {}) {
       preRollRef.current = [];
       speechMsRef.current = frameMs;
       silenceMsRef.current = 0;
+      segmentStartRef.current = offsetRef.current;
+      lastPartialAtRef.current = performance.now();
     } else if (isSpeech) {
       speechRef.current.push(samples);
       speechMsRef.current += frameMs;
@@ -138,7 +144,41 @@ export function useLiveCapture({ onSegment, onError, onLevel } = {}) {
 
     const bufferedSec =
       speechRef.current.reduce((n, c) => n + c.length, 0) / sampleRate;
-    if (bufferedSec > LIVE_TUNING.maxSegmentSec) flushSegment(sampleRate);
+    if (bufferedSec > LIVE_TUNING.maxSegmentSec) {
+      flushSegment(sampleRate);
+      return;
+    }
+
+    // Interim text: while still speaking, re-decode the last few seconds and
+    // hand them up as a provisional line. Throttled, and only over a bounded
+    // window to keep CPU cost low.
+    if (
+      speakingRef.current &&
+      bufferedSec >= 0.5 &&
+      now - lastPartialAtRef.current >= LIVE_TUNING.partialMs
+    ) {
+      lastPartialAtRef.current = now;
+      const chunks = speechRef.current;
+      const total = chunks.reduce((n, c) => n + c.length, 0);
+      const maxWindow = Math.floor(LIVE_TUNING.partialWindowSec * sampleRate);
+      const start = Math.max(0, total - maxWindow);
+      const window = new Float32Array(total - start);
+      let at = 0;
+      let pos = 0;
+      for (const c of chunks) {
+        const end = pos + c.length;
+        if (end > start) {
+          const from = Math.max(0, start - pos);
+          window.set(c.subarray(from), at);
+          at += c.length - from;
+        }
+        pos = end;
+      }
+      cbRef.current.onPartial?.({
+        audio: window,
+        offset: segmentStartRef.current + start / sampleRate,
+      });
+    }
   }
 
   async function start() {

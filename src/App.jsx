@@ -51,6 +51,7 @@ export default function App() {
   const [language, setLanguage] = useState(saved.language || "en");
   const [device, setDevice] = useState(saved.device || "webgpu");
   const [segments, setSegments] = useState([]);
+  const [partial, setPartial] = useState(null);
   const [pending, setPending] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [level, setLevel] = useState(0);
@@ -62,6 +63,7 @@ export default function App() {
   const [infoModel, setInfoModel] = useState(null);
 
   const deviceTouchedRef = useRef(!!saved.device);
+  const pendingRef = useRef(0);
   const endRef = useRef(null);
 
   // Persist user choices so the app doesn't fall back to the default model.
@@ -83,12 +85,17 @@ export default function App() {
   const engine = useEngine({
     onSegment: ({ id, offset, data }) => {
       setPending((p) => Math.max(0, p - 1));
+      setPartial(null);
       const text = (data.text || "").trim();
       if (text) {
         setSegments((prev) =>
           [...prev, { id, offset, text }].sort((a, b) => a.id - b.id),
         );
       }
+    },
+    onPartial: ({ data, offset }) => {
+      const text = (data?.text || "").trim();
+      setPartial(text ? { text, offset } : null);
     },
     onLiveError: () => setPending((p) => Math.max(0, p - 1)),
   });
@@ -168,6 +175,22 @@ export default function App() {
         [audio.buffer],
       );
     },
+    onPartial: ({ audio, offset }) => {
+      // Don't queue interim work behind committed segments.
+      if (pendingRef.current > 0) return;
+      engine.transcribe(
+        {
+          audio,
+          model,
+          device,
+          language: transcribeLanguage,
+          live: true,
+          partial: true,
+          offset,
+        },
+        [audio.buffer],
+      );
+    },
     onError: engine.setError,
     onLevel: setLevel,
   });
@@ -185,7 +208,12 @@ export default function App() {
   // Keep the newest line in view.
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [segments, live.liveActive]);
+  }, [segments, partial, live.liveActive]);
+
+  // Track pending in a ref for the interim-text guard.
+  useEffect(() => {
+    pendingRef.current = pending;
+  }, [pending]);
 
   const busy =
     engine.status === "loading" ||
@@ -239,11 +267,13 @@ export default function App() {
   async function toggleLive() {
     if (live.liveActive) {
       await live.stop();
+      setPartial(null);
       return;
     }
     engine.setError(null);
     setStarting(true);
     setSegments([]);
+    setPartial(null);
     setPending(0);
     try {
       await engine.loadModel({ model, device });
@@ -293,6 +323,7 @@ export default function App() {
         onChooseModel={() => setSettingsOpen(true)}
         liveActive={live.liveActive}
         segments={segments}
+        partial={partial}
         endRef={endRef}
       />
 

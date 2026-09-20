@@ -187,6 +187,30 @@ src/
   Moonshine models use the same `encoder_model` / `decoder_model_merged` file
   layout and work with the existing engine.
 
+## Performance
+
+Live transcription is latency-bound, so Scribe applies a few things:
+
+- **WASM multi-threading** — ONNX Runtime Web spreads inference across CPU cores
+  only in a **cross-origin-isolated** context. Dev/preview set the
+  `COOP`/`COEP` headers, and so does `public/_headers` (Netlify/Cloudflare
+  Pages). **GitHub Pages cannot**, so CPU inference there is single-threaded
+  (roughly 2–4x slower). Scribe sets `numThreads` when isolation is available.
+- **Warm-up pass** — after a model loads, it runs one dummy clip so the WASM
+  kernels are compiled before your first real utterance.
+- **Bounded decode** — per-segment `max_new_tokens` is capped by audio length so
+  a bad segment can't stall the queue.
+- **Snappy VAD** — segments flush after ~500 ms of silence (8 s max) so captions
+  appear sooner.
+- **Interim text** — while you keep speaking, Scribe periodically re-decodes the
+  last few seconds and shows them as a provisional (italic) line, then commits
+  the final text on a pause. Interim decodes are coalesced and skipped when
+  committed work is queued, so they can't build a backlog.
+
+Model choice matters most: **Moonshine Tiny/Base** and **Whisper Tiny** are the
+fast options; larger models trade latency for accuracy. WebGPU (when available)
+is several times faster than CPU.
+
 ## Troubleshooting
 
 - **"CPU" badge / no WebGPU** — the browser or device can't provide a WebGPU

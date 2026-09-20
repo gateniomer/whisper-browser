@@ -8,6 +8,7 @@ export default function Stage({
   onChooseModel,
   liveActive,
   segments,
+  partial,
   endRef,
 }) {
   return (
@@ -31,6 +32,12 @@ export default function Stage({
               <span>{s.text}</span>
             </li>
           ))}
+          {partial && (
+            <li className="line partial">
+              <time>{fmt(partial.offset)}</time>
+              <span>{partial.text}</span>
+            </li>
+          )}
           <li ref={endRef} />
         </ul>
       )}

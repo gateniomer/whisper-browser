@@ -21,6 +21,21 @@ env.allowLocalModels = false;
 const ORT_VERSION = "1.31.0-dev.20260914-8d85527a0";
 try {
   env.backends.onnx.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
+  env.backends.onnx.wasm.simd = true;
+  // WASM multi-threading only works in a cross-origin-isolated context
+  // (COOP/COEP). Set it explicitly when available; otherwise ORT falls back to
+  // single-threaded anyway, and setting it would just log a warning.
+  if (
+    typeof self !== "undefined" &&
+    self.crossOriginIsolated &&
+    typeof navigator !== "undefined" &&
+    navigator.hardwareConcurrency
+  ) {
+    env.backends.onnx.wasm.numThreads = Math.min(
+      navigator.hardwareConcurrency,
+      4,
+    );
+  }
 } catch {
   /* older/newer transformers may not expose this */
 }
@@ -135,6 +150,8 @@ function withTimeout(promise, ms) {
 export function createTransformersEngine(post) {
   let transcriber = null;
   let loadedKey = null;
+  let warmed = false;
+  let partialQueued = false;
 
   // Transcriptions run one at a time; live mode can queue several segments.
   let queue = Promise.resolve();
@@ -309,6 +326,17 @@ export function createTransformersEngine(post) {
     transcriber = pipe;
     loadedKey = `${model}|${effective}`;
 
+    // Warm-up pass: compile the WASM kernels on a short silent clip so the
+    // first real utterance isn't the slow one. Result is discarded.
+    if (!warmed) {
+      warmed = true;
+      try {
+        await transcriber(new Float32Array(16000));
+      } catch {
+        /* warming is best-effort */
+      }
+    }
+
     post({ type: "status", data: "idle" });
     return transcriber;
   }
@@ -333,7 +361,8 @@ export function createTransformersEngine(post) {
   async function handleTranscribe(msg) {
     const pipe = await getTranscriber(msg);
 
-    post({ type: "status", data: "transcribing" });
+    // Interim decodes run often; skip the status churn for them.
+    if (!msg.partial) post({ type: "status", data: "transcribing" });
 
     // Decode options differ by model family. Whisper (and distil-whisper) take
     // chunking/language/timestamps; live segments skip timestamps because the
@@ -343,11 +372,14 @@ export function createTransformersEngine(post) {
     const family = modelFamily(msg.model);
     let options = {};
     if (family === "whisper") {
+      // Bound the decoder by audio length so a bad segment can't run long.
+      const seconds = msg.audio.length / 16000;
       options = {
         chunk_length_s: 30,
         stride_length_s: 5,
         return_timestamps: !msg.live,
         task: "transcribe",
+        max_new_tokens: Math.min(448, Math.max(16, Math.ceil(seconds * 6) + 8)),
         ...(msg.language ? { language: msg.language } : {}),
       };
     } else if (family === "cohere") {
@@ -373,7 +405,9 @@ export function createTransformersEngine(post) {
       if (output.chunks) output.chunks = [];
     }
 
-    if (msg.live) {
+    if (msg.partial) {
+      post({ type: "partial", offset: msg.offset, data: output });
+    } else if (msg.live) {
       post({ type: "segment", id: msg.id, offset: msg.offset, data: output });
     } else {
       post({ type: "result", data: output });
@@ -381,7 +415,7 @@ export function createTransformersEngine(post) {
 
     // This unit of work is done. Live mode may still have segments queued; the
     // app keeps its controls disabled while any are pending.
-    post({ type: "status", data: "idle" });
+    if (!msg.partial) post({ type: "status", data: "idle" });
   }
 
   async function handle(msg) {
@@ -446,6 +480,19 @@ export function createTransformersEngine(post) {
     }
 
     if (msg.type !== "transcribe") return;
+
+    // Interim decodes are best-effort: keep at most one queued so they can't
+    // pile up behind (or in front of) committed segments.
+    if (msg.partial) {
+      if (partialQueued) return;
+      partialQueued = true;
+      enqueue(() => handleTranscribe(msg))
+        .catch(() => {})
+        .finally(() => {
+          partialQueued = false;
+        });
+      return;
+    }
 
     try {
       await enqueue(() => handleTranscribe(msg));
