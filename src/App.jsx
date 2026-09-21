@@ -52,6 +52,7 @@ export default function App() {
   const [infoModel, setInfoModel] = useState(null);
 
   const pendingRef = useRef(0);
+  const segmentKeyRef = useRef(0);
   const endRef = useRef(null);
 
   const engine = useEngine({
@@ -60,8 +61,10 @@ export default function App() {
       setPartial(null);
       const text = (data.text || "").trim();
       if (text) {
+        // Assign a locally-unique key so the list can never hit duplicate keys.
+        const key = ++segmentKeyRef.current;
         setSegments((prev) =>
-          [...prev, { id, offset, text }].sort((a, b) => a.id - b.id),
+          [...prev, { key, id, offset, text }].sort((a, b) => a.key - b.key),
         );
       }
     },
@@ -234,6 +237,19 @@ export default function App() {
     setDevice(engine.suggestDevice || "wasm");
   }
 
+  // Free the in-memory model (files stay downloaded) and require choosing again.
+  function handleUnload() {
+    engine.unloadModel();
+    setModel(null);
+    setPartial(null);
+  }
+
+  // Choosing a model closes the sheet so the transcript is visible.
+  function handleUseModel(id) {
+    setModel(id);
+    setSettingsOpen(false);
+  }
+
   if (!booted) {
     return (
       <Splash
@@ -304,7 +320,8 @@ export default function App() {
           gpuReady: engine.gpuStatus === "ready",
           onDownload: (id) => engine.downloadModel({ model: id, device }),
           onDelete: engine.deleteModel,
-          onUse: setModel,
+          onUse: handleUseModel,
+          onUnload: handleUnload,
           onInfo: setInfoModel,
         }}
       />

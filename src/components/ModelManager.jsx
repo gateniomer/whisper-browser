@@ -3,7 +3,13 @@ import {
   requiresWebGPU,
   sizeLabel,
 } from "../lib/models.js";
-import { CheckIcon, DownloadIcon, InfoIcon, PlayIcon, TrashIcon } from "./Icons.jsx";
+import {
+  DownloadIcon,
+  EjectIcon,
+  InfoIcon,
+  PlayIcon,
+  TrashIcon,
+} from "./Icons.jsx";
 
 export default function ModelManager({
   models,
@@ -19,6 +25,7 @@ export default function ModelManager({
   onDownload,
   onDelete,
   onUse,
+  onUnload,
   onInfo,
 }) {
   return (
@@ -100,12 +107,16 @@ export default function ModelManager({
                 )}
                 <button
                   className={"iconBtn" + (isActive ? " accent" : "")}
-                  onClick={() => onUse(m.id)}
-                  disabled={isActive || !downloaded || locked || blockedGPU}
-                  title={isActive ? "Active" : "Use"}
-                  aria-label={isActive ? `${m.label} is active` : `Use ${m.label}`}
+                  onClick={() => (isActive ? onUnload(m.id) : onUse(m.id))}
+                  disabled={
+                    isActive ? liveActive : !downloaded || locked || blockedGPU
+                  }
+                  title={isActive ? "Unload" : "Use"}
+                  aria-label={
+                    isActive ? `Unload ${m.label}` : `Use ${m.label}`
+                  }
                 >
-                  {isActive ? <CheckIcon /> : <PlayIcon />}
+                  {isActive ? <EjectIcon /> : <PlayIcon />}
                 </button>
               </div>
             </li>

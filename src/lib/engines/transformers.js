@@ -304,6 +304,21 @@ export function createTransformersEngine(post) {
         });
         return;
 
+      case "unload":
+        // Free the in-memory pipeline; downloaded files stay cached.
+        enqueue(async () => {
+          try {
+            transcriber?.dispose?.();
+          } catch {
+            /* ignore */
+          }
+          transcriber = null;
+          loadedKey = null;
+          post({ type: "unloaded" });
+          post({ type: "status", data: "idle" });
+        });
+        return;
+
       case "transcribe":
         // Interim decodes are best-effort: keep at most one queued so they
         // can't pile up behind (or in front of) committed segments.

@@ -20,25 +20,25 @@ export default function Stage({
       {!showEmpty && (
         <ul className="lines">
           {segments.length === 0 && (
-            <li className="line muted">
+            <li className="line muted" key="empty">
               {liveActive
                 ? "Listening… start speaking."
                 : "No speech captured yet."}
             </li>
           )}
           {segments.map((s) => (
-            <li className="line" key={s.id}>
+            <li className="line" key={s.key ?? s.id ?? s.offset}>
               <time>{fmt(s.offset)}</time>
               <span>{s.text}</span>
             </li>
           ))}
           {partial && (
-            <li className="line partial">
+            <li className="line partial" key="partial">
               <time>{fmt(partial.offset)}</time>
               <span>{partial.text}</span>
             </li>
           )}
-          <li ref={endRef} />
+          <li key="end" ref={endRef} />
         </ul>
       )}
     </main>

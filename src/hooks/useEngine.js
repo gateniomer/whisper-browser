@@ -58,13 +58,17 @@ export function useEngine(callbacks = {}) {
         case "partial":
           cbRef.current.onPartial?.(msg);
           break;
-        case "loaded": {
+        case "loaded":
           loadedKeyRef.current = msg.key ?? null;
-          const waiters = loadWaitersRef.current;
-          loadWaitersRef.current = [];
-          waiters.forEach((w) => w.resolve());
+          {
+            const waiters = loadWaitersRef.current;
+            loadWaitersRef.current = [];
+            waiters.forEach((w) => w.resolve());
+          }
           break;
-        }
+        case "unloaded":
+          loadedKeyRef.current = null;
+          break;
         case "cache-list":
           setCacheUrls(Array.isArray(msg.data) ? msg.data : []);
           break;
@@ -169,6 +173,7 @@ export function useEngine(callbacks = {}) {
 
   function loadModel({ model, device }) {
     if (loadedKeyRef.current === `${model}|${device}`) return Promise.resolve();
+    setProgress(null); // don't show the previous operation's percentage
     return new Promise((resolve, reject) => {
       loadWaitersRef.current.push({ resolve, reject });
       post({ type: "load", model, device });
@@ -177,12 +182,17 @@ export function useEngine(callbacks = {}) {
 
   function downloadModel({ model, device }) {
     setError(null);
+    setProgress(null);
     setDownloading(model);
     post({ type: "download", model, device });
   }
 
   function deleteModel(model) {
     post({ type: "delete", model });
+  }
+
+  function unloadModel() {
+    post({ type: "unload" });
   }
 
   function transcribe(payload, transfer) {
@@ -205,6 +215,7 @@ export function useEngine(callbacks = {}) {
     loadModel,
     downloadModel,
     deleteModel,
+    unloadModel,
     transcribe,
   };
 }

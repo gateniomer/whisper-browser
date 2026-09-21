@@ -37,7 +37,8 @@ export function useLiveCapture({ onSegment, onError, onLevel, onPartial } = {}) 
     silenceMsRef.current = 0;
     speakingRef.current = false;
     offsetRef.current = 0;
-    idRef.current = 0;
+    // idRef is intentionally NOT reset: segment ids stay unique for the app's
+    // lifetime so list keys can never collide across sessions.
     noiseFloorRef.current = 0.005;
     vadRef.current = false;
     segmentStartRef.current = 0;

@@ -13,7 +13,9 @@ models run locally with WebGPU (or CPU/WASM) and work offline once downloaded.
 - **Fully local** — audio never leaves the device; no accounts, no servers, no
   telemetry.
 - **Multiple models** (Whisper, Moonshine, Distil-Whisper) with an in-app
-  download manager — pick what to download and delete it anytime.
+  download manager — pick what to download and delete it anytime. Downloaded
+  models show **Use** to load and **Unload** (eject) to free memory without
+  deleting the files.
 - **WebGPU accelerated**, with an automatic CPU (WASM) fallback, and a clear
   indicator when the GPU isn't available.
 - **Works offline** after a model is cached in the browser.

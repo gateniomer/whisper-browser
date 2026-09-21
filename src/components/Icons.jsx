@@ -118,19 +118,11 @@ export function PlayIcon({ size = 20 } = {}) {
   );
 }
 
-export function CheckIcon({ size = 20 } = {}) {
+export function EjectIcon({ size = 20 } = {}) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      width={size}
-      height={size}
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M5 12.5l4.5 4.5L19 7" />
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor">
+      <path d="M12 5l7 9H5z" />
+      <rect x="5" y="16.5" width="14" height="2.2" rx="1.1" />
     </svg>
   );
 }

@@ -15,6 +15,7 @@ import {
 export function createParakeetEngine(post) {
   let model = null;
   let loadedKey = null;
+  let partialQueued = false;
 
   let queue = Promise.resolve();
   const enqueue = (task) => {
@@ -78,7 +79,8 @@ export function createParakeetEngine(post) {
   async function handleTranscribe(msg) {
     const m = await getModel({ model: msg.model, device: msg.device });
 
-    post({ type: "status", data: "transcribing" });
+    // Interim decodes run often; skip the status churn for them.
+    if (!msg.partial) post({ type: "status", data: "transcribing" });
 
     // parakeet.js transcribes a whole clip; our VAD already hands it one
     // utterance per live segment. The text field is `utterance_text`.
@@ -87,12 +89,14 @@ export function createParakeetEngine(post) {
       text: (result?.utterance_text ?? result?.text ?? "").trim(),
     };
 
-    if (msg.live) {
+    if (msg.partial) {
+      post({ type: "partial", offset: msg.offset, data: output });
+    } else if (msg.live) {
       post({ type: "segment", id: msg.id, offset: msg.offset, data: output });
     } else {
       post({ type: "result", data: output });
     }
-    post({ type: "status", data: "idle" });
+    if (!msg.partial) post({ type: "status", data: "idle" });
   }
 
   async function handle(msg) {
@@ -149,7 +153,33 @@ export function createParakeetEngine(post) {
         });
         return;
 
+      case "unload":
+        // Free the in-memory model; its IndexedDB cache is kept.
+        enqueue(async () => {
+          try {
+            model?.dispose?.();
+          } catch {
+            /* ignore */
+          }
+          model = null;
+          loadedKey = null;
+          post({ type: "unloaded" });
+          post({ type: "status", data: "idle" });
+        });
+        return;
+
       case "transcribe":
+        // Interim decodes are best-effort: keep at most one queued.
+        if (msg.partial) {
+          if (partialQueued) return;
+          partialQueued = true;
+          enqueue(() => handleTranscribe(msg))
+            .catch(() => {})
+            .finally(() => {
+              partialQueued = false;
+            });
+          return;
+        }
         try {
           await enqueue(() => handleTranscribe(msg));
         } catch (err) {
